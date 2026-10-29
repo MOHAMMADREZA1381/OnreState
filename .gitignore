@@ -364,3 +364,4 @@ FodyWeavers.xsd
 # توکن محلی بات
 run-local.ps1
 ExponentService/node_modules/
+ExponentService/dist/

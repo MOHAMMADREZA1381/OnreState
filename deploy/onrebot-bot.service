@@ -1,0 +1,22 @@
+[Unit]
+Description=OnRe Rank Telegram bot
+After=network-online.target onrebot-exponent.service
+Wants=network-online.target onrebot-exponent.service
+
+[Service]
+User=onrebot
+Group=onrebot
+WorkingDirectory=/opt/onrebot/bot
+EnvironmentFile=/etc/onrebot.env
+# StateDirectory creates /var/lib/onrebot (owned by the service user); the bot stores users.txt there.
+StateDirectory=onrebot
+Environment=XDG_CONFIG_HOME=/var/lib/onrebot
+ExecStart=/usr/bin/dotnet /opt/onrebot/bot/OnReBot.dll
+Restart=always
+RestartSec=5
+MemoryMax=250M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

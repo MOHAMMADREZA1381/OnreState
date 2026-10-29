@@ -51,6 +51,8 @@ dotnet run --project OnReBot
 - خرابی یک پلتفرم فقط همان بخش را «در حال حاضر در دسترس نیست» می‌کند.
 - Exponent: هیچ تلاشی برای عبور از Vercel Security Checkpoint نشده است. فاز ۲ از طریق `IExponentPositionProvider` اضافه می‌شود.
 
+- راهنمای کامل استقرار روی Ubuntu: [deploy/DEPLOY.md](deploy/DEPLOY.md)
+
 ## تست
 
 ```bash

@@ -1,22 +1,20 @@
 {
   "name": "exponent-service",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tsx src/server.ts",
-    "check": "tsc"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Reads Exponent YT positions (Solana RPC) and PnL/prices (official Exponent API) for the OnRe bot.",
+  "private": true,
   "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts"
+  },
   "dependencies": {
-    "@exponent-labs/exponent-sdk": "^0.9.32",
+    "@exponent-labs/exponent-sdk": "0.9.32"
+  },
+  "devDependencies": {
     "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
-  },
-  "private": "true"
+  }
 }

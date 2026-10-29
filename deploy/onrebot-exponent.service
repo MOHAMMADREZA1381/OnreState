@@ -1,0 +1,20 @@
+[Unit]
+Description=OnRe Bot - Exponent position service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=onrebot
+Group=onrebot
+WorkingDirectory=/opt/onrebot/exponent
+EnvironmentFile=/etc/onrebot.env
+# Heap cap keeps the Node process small on a 768 MB server.
+ExecStart=/usr/bin/node --max-old-space-size=200 dist/server.js
+Restart=always
+RestartSec=5
+MemoryMax=400M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

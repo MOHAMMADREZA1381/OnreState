@@ -44,12 +44,12 @@ sudo apt install -y dotnet-runtime-8.0
 Node.js (نسخهٔ apt اوبونتو قدیمی است؛ با NodeSource نصب کن):
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs
 node -v
 ```
 
-> سرویس را من با Node 24 تست کرده‌ام. اگر با نسخهٔ ۲۲ خطای سازگاری دیدی، به‌جای `setup_22.x` از `setup_24.x` استفاده کن.
+> از Node 24 استفاده کن (npm 11): فایل `package-lock.json` با همین نسخه ساخته و تست شده. با Node 22 (npm 10) دستور `npm ci` خطای `Missing: utf-8-validate from lock file` می‌دهد. اگر مجبور به نسخهٔ پایین‌تر شدی، به‌جای `npm ci` از `npm install --omit=dev` استفاده کن.
 
 Swap یک گیگابایتی (برای سرور ۷۶۸ مگابایتی مهم است):
 

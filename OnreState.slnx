@@ -1,3 +1,4 @@
 <Solution>
-  <Project Path="OnreState/OnreState.csproj" />
+  <Project Path="OnReBot.Tests/OnReBot.Tests.csproj" />
+  <Project Path="OnReBot/OnReBot.csproj" />
 </Solution>

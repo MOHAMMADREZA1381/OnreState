@@ -4,7 +4,23 @@
 const API = "https://api.exponent.finance";
 const HEADERS = { "User-Agent": "OnReBot/1.0" };
 
+// Set EXPONENT_TIMING=1 to log how long each step takes (for finding slow spots).
+const TIMING = process.env.EXPONENT_TIMING === "1";
+export async function timed<T>(label: string, work: () => Promise<T>): Promise<T> {
+  if (!TIMING) return work();
+  const start = performance.now();
+  try {
+    return await work();
+  } finally {
+    console.log(`[timing] ${label.padEnd(34)} ${String(Math.round(performance.now() - start)).padStart(6)} ms`);
+  }
+}
+
 async function apiGet<T>(path: string): Promise<T> {
+  return timed(path.split("?")[0].replace(/\/[1-9A-HJ-NP-Za-km-z]{32,44}/g, "/…"), () => apiGetInner<T>(path));
+}
+
+async function apiGetInner<T>(path: string): Promise<T> {
   const response = await fetch(API + path, { headers: HEADERS, signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${path.split("?")[0].replace(/\/[1-9A-HJ-NP-Za-km-z]{32,44}/g, "/…")}`);
   return (await response.json()) as T;

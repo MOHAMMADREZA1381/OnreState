@@ -65,3 +65,4 @@
 # Files that run on the Linux server must always keep LF line endings
 deploy/*.service text eol=lf
 deploy/*.example text eol=lf
+deploy/*.sh text eol=lf

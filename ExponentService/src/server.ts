@@ -1,7 +1,7 @@
 import http from "node:http";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getExtras, getOnReMarkets, type OnReMarket } from "./extras.js";
+import { getExtras, getOnReMarkets, timed, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
 const connection = new Connection(process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com", "confirmed");
@@ -16,7 +16,7 @@ type ApiYtPosition = {
   claimedInterestUsd: number;
 };
 
-// API رسمی و مستند Exponent (https://docs.exponent.finance/api-documentation)؛ اگر خراب بود فقط فیلدهای PnL حذف می‌شوند.
+// Official Exponent API (https://docs.exponent.finance/api-documentation). If it fails, only the PnL fields are left out.
 // No caching: every request reads fresh data.
 async function getApiPositions(wallet: string): Promise<Map<string, ApiYtPosition>> {
   try {
@@ -33,7 +33,7 @@ async function getApiPositions(wallet: string): Promise<Map<string, ApiYtPositio
   }
 }
 
-// قیمت فعلی YT (API رسمی /py-prices)؛ با اپ Exponent مقایسه شد و عملاً به دلار است.
+// Current YT price (official /py-prices API). Checked against the Exponent app: it is effectively in USD.
 // Shared data (key = vault address), cached briefly. Only successful prices are cached. ageMs is set when served from cache.
 const PRICE_CACHE_MS = 30 * 1000;
 const priceCache = new Map<string, { at: number; price: number }>();
@@ -73,9 +73,9 @@ async function getYtPrices(vaultAddresses: string[]): Promise<Map<string, PriceE
 const VAULT_CACHE_MS = 5 * 60 * 1000;
 const vaultCache = new Map<string, { at: number; vault: Vault; decimals: number }>();
 
-async function getVault(address: string) {
+async function getVault(address: string, maxAgeMs = VAULT_CACHE_MS) {
   const cached = vaultCache.get(address);
-  if (cached && Date.now() - cached.at < VAULT_CACHE_MS) return { ...cached, ageMs: Date.now() - cached.at };
+  if (cached && Date.now() - cached.at < maxAgeMs) return { ...cached, ageMs: Date.now() - cached.at };
 
   const vault = await Vault.load(LOCAL_ENV, connection, new PublicKey(address));
   const mint = await connection.getParsedAccountInfo(vault.mintYt);
@@ -92,7 +92,7 @@ async function getPositions(wallet: string, requestedVaults: string[]) {
   let discovered: OnReMarket[] = [];
   let discoveryFailed = false;
   try {
-    discovered = (await getOnReMarkets()).markets;
+    discovered = (await timed("getOnReMarkets", () => getOnReMarkets())).markets;
   } catch (e) {
     console.error("Exponent markets unavailable:", String(e));
     discoveryFailed = true;
@@ -100,16 +100,27 @@ async function getPositions(wallet: string, requestedVaults: string[]) {
   const vaultAddresses = [...new Set([...requestedVaults, ...discovered.map((m) => m.vault)])];
   const nameByVault = new Map(discovered.map((m) => [m.vault, m.name]));
 
-  const [api, ytPrices, extras] = await Promise.all([getApiPositions(wallet), getYtPrices(vaultAddresses), getExtras(wallet, discovered)]);
+  for (const address of vaultAddresses) knownVaults.add(address);
+
+  // The Exponent API calls and the Solana RPC reads do not depend on each other, so they run at the same time.
+  const apiWork = timed("api+prices+extras (parallel)", () =>
+    Promise.all([getApiPositions(wallet), getYtPrices(vaultAddresses), getExtras(wallet, discovered)]),
+  );
+  const rpcWork = (async () => {
+    const loaded = await timed("getVault x" + vaultAddresses.length, () => Promise.all(vaultAddresses.map((address) => getVault(address))));
+    // One RPC call for all vaults instead of one per vault. A vault where the wallet never held YT gives null:
+    // that means "no position", not an error.
+    const loadedPositions = await timed("YtPosition.loadBatch (RPC)", () =>
+      YtPosition.loadBatch(LOCAL_ENV, connection, owner, loaded.map((l) => l.vault)),
+    );
+    return { loaded, loadedPositions };
+  })();
+  const [[api, ytPrices, extras], { loaded, loadedPositions }] = await Promise.all([apiWork, rpcWork]);
 
   const results = await Promise.all(
-    vaultAddresses.map(async (address) => {
-      const { vault, decimals, ageMs: vaultAgeMs } = await getVault(address);
-      // A wallet that never held YT in this vault has no position account: that means "no position", not an error.
-      const position = await YtPosition.loadByOwner(LOCAL_ENV, connection, owner, vault).catch((e) => {
-        if (String(e).includes("does not exist")) return null;
-        throw e;
-      });
+    vaultAddresses.map(async (address, i) => {
+      const { vault, decimals } = loaded[i];
+      const position = loadedPositions[i];
       if (position == null) return null;
       const scale = 10 ** decimals;
       const yt = Number(position.ytBalance) / scale;
@@ -122,17 +133,18 @@ async function getPositions(wallet: string, requestedVaults: string[]) {
       const stats = api.get(address);
       const priceEntry = expired ? undefined : ytPrices.get(address);
       const ytPrice = priceEntry?.price;
-      // Oldest cached piece used for this position (null = everything was fetched fresh just now).
-      const cachedMs = Math.max(vaultAgeMs ?? 0, priceEntry?.ageMs ?? 0);
+      // Age of the cached price (null = fetched fresh just now). The vault state is refreshed in the background
+      // every few minutes and only moves the claimable-interest estimate negligibly, so it is not tagged.
+      const cachedMs = priceEntry?.ageMs ?? 0;
       const cachedAgeSeconds = cachedMs > 0 ? Math.floor(cachedMs / 1000) : null;
 
-      // Total PnL به همان روش اپ Exponent (با اسکرین‌شات تأیید شد، ولت تست: -154.14 + 203.18 - 75.28 = -26.24):
-      //   Price appreciation = حجم معاملات ثبت‌شده × (قیمت فعلی − میانگین هزینه)
+      // Total PnL, computed the same way as the Exponent app (checked against a screenshot of a test wallet: -154.14 + 203.18 - 75.28 = -26.24):
+      // Price appreciation = recorded traded size × (current price - average cost)
       //   Total = Price appreciation + Claimed yield + Realized PnL (+ Unclaimed yield)
       const realizedPnl = stats ? stats.totalRealizedPnlLamports / 10 ** stats.decimals : null;
       const priceAppreciation =
         ytPrice != null && stats ? (stats.totalSizeLamports / 10 ** stats.decimals) * (ytPrice - stats.avgCostBasis) : null;
-      // 1 ONyc = currentSyExchangeRate دلار (با Kamino تأیید شد)؛ این بخش با داده‌ی واقعی تأیید نشده چون در تست صفر بود.
+      // 1 ONyc = currentSyExchangeRate USD (confirmed against Kamino). This part is not verified with real data because it was zero in testing.
       const unclaimedYieldUsd = claimable * vault.currentSyExchangeRate;
       const totalPnl =
         priceAppreciation != null && realizedPnl != null && stats
@@ -166,6 +178,20 @@ async function getPositions(wallet: string, requestedVaults: string[]) {
   };
 }
 
+// Vault state used to be loaded (about 2 s or more on the public RPC) by whichever user came first after the cache
+// expired, which with low traffic is nearly every report. Refreshing it in the background removes that wait.
+const PREWARM_INTERVAL_MS = 4 * 60 * 1000; // shorter than VAULT_CACHE_MS so entries never expire between refreshes
+const knownVaults = new Set<string>();
+
+async function prewarm() {
+  try {
+    for (const market of (await getOnReMarkets()).markets) knownVaults.add(market.vault);
+    await Promise.allSettled([...knownVaults].map((address) => getVault(address, PREWARM_INTERVAL_MS - 1000)));
+  } catch (e) {
+    console.error("Prewarm failed:", String(e));
+  }
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const match = url.pathname.match(/^\/positions\/([1-9A-HJ-NP-Za-km-z]{32,44})$/);
@@ -185,4 +211,8 @@ http.createServer(async (req, res) => {
     console.error(e);
     res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: String(e) }));
   }
-}).listen(port, "127.0.0.1", () => console.log(`exponent service on http://127.0.0.1:${port}`));
+}).listen(port, "127.0.0.1", () => {
+  console.log(`exponent service on http://127.0.0.1:${port}`);
+  void prewarm();
+  setInterval(() => void prewarm(), PREWARM_INTERVAL_MS).unref();
+});

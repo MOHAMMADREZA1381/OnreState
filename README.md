@@ -71,6 +71,7 @@ None of these are stored in the repository.
 | `ADMIN_USER_ID` | Numeric Telegram id of the admin. Only this user gets a reply to `/stats` (optional; if unset, `/stats` is disabled) |
 | `SOLANA_RPC_URL` | Solana RPC used by the Exponent service (optional; a private RPC such as Helius or QuickNode is faster and avoids rate limits) |
 | `EXPONENT_SERVICE_PORT` | Port of the Exponent service (optional, default `3001`) |
+| `EXPONENT_TIMING` | Set to `1` to make the Exponent service log how long each step takes (optional, for finding slow spots) |
 
 For local runs you can keep these in a file named `run-local.ps1`; that name is listed in `.gitignore`.
 
@@ -88,6 +89,7 @@ For local runs you can keep these in a file named `run-local.ps1`; that name is 
 
 - The wallet address is validated before any request (base58, 32 to 44 characters).
 - Rate limit: at most 2 reports per user every 5 minutes. At most 5 reports run at the same time; extra requests wait briefly and then get a "busy" reply.
+- Speed: a typical report (no tranche position) takes about 1 to 1.5 seconds. Exponent vault state is refreshed in the background so the first user after a quiet period does not wait for it, and all positions are read from the Solana RPC with a single call. The bot answers immediately with a "Fetching your report…" message and replaces it with the report. The slowest step is Exponent's tranche stats endpoint (3 to 6 seconds), which is only called for wallets that hold a Protected (tranche) position.
 - Every HTTP request has a 10 second timeout (the local Exponent service gets 25 seconds because it talks to the Solana RPC).
 - Caching is intentionally minimal. Only data shared by all users is cached, briefly: the Loopscale depositor list (30 s), the Exponent YT price (30 s), and the Exponent vault state and market lists (5 min). Anything served from a cache is tagged in the message (`🕒 cached data · 12s old`). Wallet-specific data (OnRe, Kamino, your Exponent position and PnL) is always fetched fresh.
 - Exponent PnL comes from the [official Exponent API](https://docs.exponent.finance/api-documentation). Total PnL = price appreciation + claimed yield + realized PnL (+ unclaimed yield), the same breakdown the Exponent app uses. It is an estimate and can differ by a few cents because prices move. If the API is unavailable, the position is still shown with `PnL: temporarily unavailable`, and the Protected/Liquidity sections say they are currently unavailable. The Liquidity PnL is an estimate (value minus cost basis plus farm rewards), because the API does not define one.

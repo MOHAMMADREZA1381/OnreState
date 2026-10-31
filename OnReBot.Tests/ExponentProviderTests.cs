@@ -20,7 +20,7 @@ public class ExponentProviderTests
     [Fact]
     public void ShowsCostBasisAndPnlWhenApiDataPresent()
     {
-        // اعداد از اسکرین‌شات اپ Exponent برای ولت تست: -154.14 + 203.18 - 75.28 = -26.24
+        // Numbers from a screenshot of the Exponent app for a test wallet: -154.14 + 203.18 - 75.28 = -26.24
         var json = """{"positions":[{"vault":"7f1P","yt":41372.7,"claimableInterest":0,"expiresAt":"2027-01-10T13:00:00.000Z","expired":false,"avgCostBasis":0.029177,"currentValue":984.90,"priceAppreciation":-154.14,"claimedInterestUsd":203.18,"realizedPnl":-75.28,"unclaimedYieldUsd":0,"totalPnl":-26.24}]}""";
 
         var p = Assert.Single(HttpExponentPositionProvider.Parse(json, new()).Positions);
@@ -31,7 +31,7 @@ public class ExponentProviderTests
         Assert.Contains("\n  ◦ Price appreciation: -$154.14", p.Details);
         Assert.Contains("\n  ◦ Claimed yield: +$203.18", p.Details);
         Assert.Contains("\n  ◦ Realized PnL: -$75.28", p.Details);
-        Assert.DoesNotContain("Unclaimed yield", p.Details);   // صفر است و نمایش داده نمی‌شود
+        Assert.DoesNotContain("Unclaimed yield", p.Details);   // zero, so it is not shown
     }
 
     [Fact]

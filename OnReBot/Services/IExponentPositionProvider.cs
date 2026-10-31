@@ -7,7 +7,7 @@ public interface IExponentPositionProvider
     Task<ExponentResult> GetPositionsAsync(string wallet, CancellationToken ct);
 }
 
-// فاز ۱: پوزیشن Exponent فعلاً خالی است. فاز ۲ با سرویس Node/TS پر می‌شود.
+// Used when no Exponent service is configured: it returns no Exponent positions.
 public class NullExponentPositionProvider : IExponentPositionProvider
 {
     public Task<ExponentResult> GetPositionsAsync(string wallet, CancellationToken ct) =>

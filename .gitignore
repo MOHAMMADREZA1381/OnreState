@@ -361,7 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
-# توکن محلی بات
+# Local bot token
 run-local.ps1
 ExponentService/node_modules/
 ExponentService/dist/

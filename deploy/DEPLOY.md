@@ -1,47 +1,47 @@
-# استقرار روی Ubuntu
+# Deploying on Ubuntu
 
-ساختار روی سرور:
+Layout on the server:
 
 ```
 /opt/onrebot/
-├── bot/        ← خروجی dotnet publish (بات .NET)
-└── exponent/   ← سرویس Node (dist + package.json + node_modules)
-/etc/onrebot.env        ← توکن و تنظیمات (فقط روی سرور، هرگز داخل ریپو)
-/var/lib/onrebot/       ← فایل کاربران (users.txt) — خودکار ساخته می‌شود
+├── bot/        ← output of dotnet publish (the .NET bot)
+└── exponent/   ← the Node service (dist + package.json + node_modules)
+/etc/onrebot.env        ← token and settings (only on the server, never in the repository)
+/var/lib/onrebot/       ← user list (users.txt), created automatically
 ```
 
-سرویس Exponent فقط روی `127.0.0.1:3001` گوش می‌دهد، پس لازم نیست پورتی باز کنی.
+The Exponent service only listens on `127.0.0.1:3001`, so no port needs to be opened.
 
-## ۱) روی سیستم خودت: ساخت فایل‌ها
+## 1) On your machine: build the files
 
 ```bash
-# بات
+# bot
 dotnet publish OnReBot -c Release -o publish-bot -p:UseAppHost=false
 
-# سرویس Exponent
+# Exponent service
 cd ExponentService
 npm ci
 npm run build
 ```
 
-برای آپلود (مثلاً با FileZilla و SFTP) این‌ها را آماده کن:
+Prepare these for upload (for example with FileZilla over SFTP):
 
-- پوشهٔ `publish-bot/` ← کل محتوا
-- از `ExponentService/`: فقط `dist/`، `package.json` و `package-lock.json` (بدون `node_modules`)
-- از `deploy/`: فایل‌های `*.service` و `onrebot.env.example`
+- the `publish-bot/` folder: everything inside it
+- from `ExponentService/`: only `dist/`, `package.json` and `package-lock.json` (no `node_modules`)
+- from `deploy/`: the `*.service` files and `onrebot.env.example`
 
-**فایل `run-local.ps1` را هرگز نبر.**
+**Never upload `run-local.ps1`.**
 
-## ۲) روی سرور: آماده‌سازی (یک بار)
+## 2) On the server: one-time setup
 
 ```bash
 sudo apt update
 sudo apt install -y dotnet-runtime-8.0
 ```
 
-اگر پکیج `dotnet-runtime-8.0` پیدا نشد، runtime را طبق راهنمای رسمی مایکروسافت برای Ubuntu نصب کن.
+If the `dotnet-runtime-8.0` package is not found, install the runtime following Microsoft's official instructions for Ubuntu.
 
-Node.js (نسخهٔ apt اوبونتو قدیمی است؛ با NodeSource نصب کن):
+Node.js (Ubuntu's apt version is old, so use NodeSource):
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
@@ -49,9 +49,9 @@ sudo apt install -y nodejs
 node -v
 ```
 
-> از Node 24 استفاده کن (npm 11): فایل `package-lock.json` با همین نسخه ساخته و تست شده. با Node 22 (npm 10) دستور `npm ci` خطای `Missing: utf-8-validate from lock file` می‌دهد. اگر مجبور به نسخهٔ پایین‌تر شدی، به‌جای `npm ci` از `npm install --omit=dev` استفاده کن.
+> Use Node 24 (npm 11): `package-lock.json` was created and tested with it. With Node 22 (npm 10), `npm ci` fails with `Missing: utf-8-validate from lock file`. If you have to use an older version, run `npm install --omit=dev` instead of `npm ci`.
 
-Swap یک گیگابایتی (برای سرور ۷۶۸ مگابایتی مهم است):
+A 1 GB swap file (important on a 768 MB server):
 
 ```bash
 sudo fallocate -l 1G /swapfile
@@ -62,16 +62,16 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 free -h
 ```
 
-کاربر سیستمی و پوشه‌ها:
+The service user and folders:
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin onrebot
 sudo mkdir -p /opt/onrebot/bot /opt/onrebot/exponent
 ```
 
-## ۳) روی سرور: گذاشتن فایل‌ها
+## 3) On the server: put the files in place
 
-فرض کن فایل‌ها را در `~/upload/` (با پوشه‌های `bot` و `exponent` و فایل‌های `.service` و `onrebot.env.example`) آپلود کرده‌ای:
+Assume you uploaded the files to `~/upload/` (with the `bot` and `exponent` folders, the `.service` files and `onrebot.env.example`):
 
 ```bash
 sudo cp -r ~/upload/bot/. /opt/onrebot/bot/
@@ -80,17 +80,17 @@ cd /opt/onrebot/exponent && sudo npm ci --omit=dev
 sudo chown -R onrebot:onrebot /opt/onrebot
 ```
 
-اگر هنگام `npm ci` خطای ساخت (node-gyp) دیدی، `sudo apt install -y build-essential python3` را بزن و دوباره اجرا کن. این وابستگی‌ها اختیاری‌اند و بدون آن‌ها هم سرویس کار می‌کند.
+If `npm ci` shows a build error (node-gyp), run `sudo apt install -y build-essential python3` and try again. Those dependencies are optional and the service works without them.
 
-## ۴) تنظیم توکن
+## 4) Configure the token
 
 ```bash
 sudo cp ~/upload/onrebot.env.example /etc/onrebot.env
-sudo nano /etc/onrebot.env        # BOT_TOKEN و ADMIN_USER_ID را پر کن
+sudo nano /etc/onrebot.env        # fill in BOT_TOKEN and ADMIN_USER_ID
 sudo chmod 600 /etc/onrebot.env
 ```
 
-## ۵) راه‌اندازی سرویس‌ها
+## 5) Start the services
 
 ```bash
 sudo cp ~/upload/onrebot-*.service /etc/systemd/system/
@@ -98,28 +98,43 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now onrebot-exponent onrebot-bot
 ```
 
-## ۶) بررسی
+## 6) Check that it works
 
 ```bash
 systemctl status onrebot-exponent onrebot-bot
-journalctl -u onrebot-bot -f              # لاگ زندهٔ بات (Ctrl+C برای خروج)
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/x    # باید 404 بدهد = سرویس بالاست
-curl -sI https://api.telegram.org | head -1                         # دسترسی به تلگرام
-free -h                                                             # مصرف رم
+journalctl -u onrebot-bot -f              # live bot log (Ctrl+C to leave)
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/x    # should print 404 = the service is up
+curl -sI https://api.telegram.org | head -1                         # Telegram is reachable
+free -h                                                             # memory use
 ```
 
-در لاگ بات باید `Bot @... is running` ببینی.
+The bot log should contain `Bot @... is running`.
 
-## به‌روزرسانی
+## Updating (one command)
 
-1. روی سیستمت دوباره publish و build کن (مرحلهٔ ۱).
-2. فایل‌های جدید را روی `/opt/onrebot/...` بریز (مرحلهٔ ۳؛ اگر `package-lock.json` عوض شده، دوباره `npm ci --omit=dev`).
-3. `sudo chown -R onrebot:onrebot /opt/onrebot`
-4. `sudo systemctl restart onrebot-exponent onrebot-bot`
+Once the server is set up as above, every time the code changes just run this in PowerShell from the project root:
 
-## نکته‌ها
+```powershell
+.\deploy\deploy.ps1 -Server root@YOUR_SERVER_IP
+```
 
-- فایل کاربران در `/var/lib/onrebot/OnReBot/users.txt` است و با به‌روزرسانی پاک نمی‌شود.
-- اگر `ADMIN_USER_ID` ست نشود، `/stats` برای هیچ‌کس جواب نمی‌دهد.
-- RPC عمومی سولانا کند است. برای گزارش سریع‌تر Exponent، یک RPC خصوصی بگیر و `SOLANA_RPC_URL` را در `/etc/onrebot.env` بگذار، بعد `sudo systemctl restart onrebot-exponent`.
-- سقف حافظه در فایل‌های systemd (`MemoryMax`) برای سرور ۷۶۸ مگابایتی تنظیم شده؛ اگر سرویس پشت‌سرهم ری‌استارت می‌شد، `journalctl` را برای پیام کمبود حافظه ببین.
+If PowerShell refuses to run the script (execution policy), run it for this one time like this instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\deploy.ps1 -Server root@YOUR_SERVER_IP
+```
+
+The script builds the bot and the Exponent service, uploads everything over a single SSH connection (the password is asked only once), reinstalls the Node dependencies only when `package-lock.json` changed, and restarts the services. At the end it prints the `active` status and a few lines of the bot log.
+
+- Add `-DryRun` to see what would be uploaded without changing anything.
+- No password or token is stored in the script; the token stays in `/etc/onrebot.env` on the server.
+- Files that were deleted from the code are not removed from the server (new files only overwrite old ones).
+
+Manual alternative: publish and build, copy the files to `/opt/onrebot/...`, run `sudo chown -R onrebot:onrebot /opt/onrebot`, then `sudo systemctl restart onrebot-exponent onrebot-bot`.
+
+## Notes
+
+- The user list is `/var/lib/onrebot/OnReBot/users.txt` and is not removed by updates.
+- If `ADMIN_USER_ID` is not set, nobody gets a reply to `/stats`.
+- The public Solana RPC is slow and sometimes unreliable. For faster Exponent reports, get a private RPC, put it in `/etc/onrebot.env` as `SOLANA_RPC_URL`, then run `sudo systemctl restart onrebot-exponent`.
+- The `MemoryMax` limits in the systemd files are tuned for a 768 MB server; if a service keeps restarting, check `journalctl` for out-of-memory messages.

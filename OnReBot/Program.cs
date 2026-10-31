@@ -165,6 +165,7 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
 async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct)
 {
     var gotSlot = false;
+    int? placeholderId = null;
     try
     {
         gotSlot = await reportSlots.WaitAsync(BusyAfter, ct);
@@ -178,10 +179,13 @@ async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet
             return;
         }
 
+        // Immediate feedback: the report can take a few seconds, so say so right away and replace this message when it is ready.
+        placeholderId = await TrySendAsync(client, chatId, "⏳ Fetching your report…", ct);
+
         var report = await portfolio.GetReportAsync(wallet, ct);
         reportSlots.Release();
         gotSlot = false;
-        await client.SendMessage(chatId, MessageFormatter.Format(report), parseMode: ParseMode.Html, cancellationToken: ct);
+        await ShowAsync(client, chatId, placeholderId, MessageFormatter.Format(report), ct);
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
@@ -189,7 +193,7 @@ async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet
         lock (times) times.Remove(requestedAt);
         try
         {
-            await client.SendMessage(chatId, "⚠️ <b>Something went wrong.</b>\nPlease try again in a moment.", parseMode: ParseMode.Html, cancellationToken: ct);
+            await ShowAsync(client, chatId, placeholderId, "⚠️ <b>Something went wrong.</b>\nPlease try again in a moment.", ct);
         }
         catch (Exception sendEx)
         {
@@ -201,6 +205,38 @@ async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet
         if (gotSlot)
             reportSlots.Release();
     }
+}
+
+// Sends a message and returns its id, or null if sending failed (the report is then delivered as a normal message instead).
+async Task<int?> TrySendAsync(ITelegramBotClient client, long chatId, string text, CancellationToken ct)
+{
+    try
+    {
+        return (await client.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct)).Id;
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        Console.Error.WriteLine($"Could not send placeholder: {ex.Message}");
+        return null;
+    }
+}
+
+// Replaces the placeholder with the final text; if that is not possible, sends the text as a new message.
+async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, string text, CancellationToken ct)
+{
+    if (messageId != null)
+    {
+        try
+        {
+            await client.EditMessageText(chatId, messageId.Value, text, parseMode: ParseMode.Html, cancellationToken: ct);
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"Could not edit message, sending a new one: {ex.Message}");
+        }
+    }
+    await client.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
 }
 
 Task HandleError(ITelegramBotClient client, Exception exception, HandleErrorSource source, CancellationToken ct)

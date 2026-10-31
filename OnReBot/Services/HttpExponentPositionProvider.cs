@@ -5,7 +5,7 @@ using OnReBot.Models;
 
 namespace OnReBot.Services;
 
-// پوزیشن‌های Exponent (Farm، Protected، Liquidity) را از سرویس Node (ExponentService) می‌خواند.
+// Reads the Exponent positions (Farm, Protected, Liquidity) from the Node service (ExponentService).
 public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : IExponentPositionProvider
 {
     public async Task<ExponentResult> GetPositionsAsync(string wallet, CancellationToken ct)
@@ -25,7 +25,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
 
         foreach (var p in result.Positions)
         {
-            // نام از config (اگر باشد)، وگرنه نامی که سرویس از روی مارکت ساخته، وگرنه آدرس vault
+            // Name from the config if present, otherwise the name the service built from the market, otherwise the vault address
             var name = markets.FirstOrDefault(m => m.Vault == p.Vault)?.Name ?? p.Name ?? p.Vault;
             var details = $"YT balance: {Num(p.Yt)}"
                 + $"\nMaturity: {p.ExpiresAt.UtcDateTime:yyyy-MM-dd}"
@@ -35,7 +35,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
             if (p.AvgCostBasis != null)
                 details += $"\nAvg cost per YT: ${p.AvgCostBasis.Value.ToString("0.0000", CultureInfo.InvariantCulture)}";
 
-            // همان تفکیک اپ Exponent: Total PnL = Price appreciation + Claimed yield + Realized PnL (+ Unclaimed yield)
+            // Same breakdown as the Exponent app: Total PnL = Price appreciation + Claimed yield + Realized PnL (+ Unclaimed yield)
             if (p.TotalPnl != null)
             {
                 details += $"\nTotal PnL: {Signed(p.TotalPnl.Value)}";
@@ -56,7 +56,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
             positions.Add(new ExponentPosition { Section = "Farm", Market = name, Details = details, CachedSeconds = p.CachedAgeSeconds });
         }
 
-        // Protected: tranche سینیور/جونیور
+        // Protected: senior/junior tranche
         foreach (var t in result.Tranches)
         {
             var side = t.Side == "senior" ? "Senior (protected)" : "Junior";
@@ -69,7 +69,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
             positions.Add(new ExponentPosition { Section = "Protected", Market = t.Symbol, Details = details, CachedSeconds = result.ExtrasCachedAgeSeconds });
         }
 
-        // Liquidity: پوزیشن LP (رنج بر اساس APY)
+        // Liquidity: LP position (range expressed as APY)
         foreach (var l in result.Liquidity)
         {
             var range = $"{Num(l.LowerApyPct)}% – {Num(l.UpperApyPct)}%";
@@ -87,7 +87,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
 
     private static string Num(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
 
-    // مقدارهای خیلی کوچک (گرد‌شده به صفر) را «<$0.01» نشان می‌دهد تا صفر غلط‌انداز نباشد
+    // Very small values (that would round to zero) are shown as "<$0.01" so a misleading zero is not displayed
     private static string Value(decimal usd) => usd > 0 && usd < 0.01m ? "<$0.01" : $"${Num(usd)}";
 
     private static string Pnl(decimal usd) => Math.Abs(usd) < 0.005m ? "$0.00" : Signed(usd);
@@ -115,7 +115,7 @@ public class ExponentServicePosition
     public DateTimeOffset ExpiresAt { get; set; }
     public bool Expired { get; set; }
 
-    // از API رسمی Exponent (دلار)؛ اگر در دسترس نبود null است.
+    // From the official Exponent API (USD); null when it was not available.
     public decimal? AvgCostBasis { get; set; }
     public decimal? CurrentValue { get; set; }
     public decimal? PriceAppreciation { get; set; }
@@ -124,7 +124,7 @@ public class ExponentServicePosition
     public decimal? UnclaimedYieldUsd { get; set; }
     public decimal? TotalPnl { get; set; }
 
-    // null: همه‌چیز تازه بود؛ عدد: بخشی از داده از کش سرویس Node آمده.
+    // null: everything was fresh; a number: part of the data came from the Node service's cache.
     public int? CachedAgeSeconds { get; set; }
 }
 

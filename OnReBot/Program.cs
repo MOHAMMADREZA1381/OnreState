@@ -35,7 +35,17 @@ var usersFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder
 var users = new UserTracker(usersFile);
 Console.WriteLine($"Users file: {usersFile} ({users.Count} users)");
 
-var bot = new TelegramBotClient(token);
+// The library long-polls Telegram for 100 s, so its HttpClient timeout must be longer than that (default 100 s collides
+// with it and logs a "request timed out" on every quiet period). Connections are also recycled regularly.
+var telegramHttp = new HttpClient(new SocketsHttpHandler
+{
+    ConnectTimeout = TimeSpan.FromSeconds(10),
+    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+})
+{
+    Timeout = TimeSpan.FromSeconds(130)
+};
+var bot = new TelegramBotClient(token, telegramHttp);
 var waitingForAddress = new ConcurrentDictionary<long, bool>();
 const int MaxReportsPerWindow = 2;
 var reportWindow = TimeSpan.FromMinutes(5);
@@ -54,12 +64,35 @@ Console.WriteLine($"Bot @{me.Username} is running. Press Ctrl+C to stop.");
 await Task.Delay(Timeout.Infinite, cts.Token).ContinueWith(_ => { });
 return 0;
 
-async Task HandleUpdate(ITelegramBotClient client, Update update, CancellationToken ct)
+// The polling loop awaits this handler, so it must return immediately: one hung call to Telegram (up to the HTTP timeout)
+// would otherwise freeze the bot for every user. Each update is processed on its own.
+Task HandleUpdate(ITelegramBotClient client, Update update, CancellationToken ct)
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await ProcessUpdate(client, update, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Update {update.Id} failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    });
+    return Task.CompletedTask;
+}
+
+async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationToken ct)
 {
     if (update.CallbackQuery is { Data: "rank", Message: { } callbackMessage } callback)
     {
-        await users.RegisterAsync(callback.From.Id, ct);
+        // Answer first: Telegram only accepts the answer for a short time.
         await client.AnswerCallbackQuery(callback.Id, cancellationToken: ct);
+        await users.RegisterAsync(callback.From.Id, ct);
         waitingForAddress[callbackMessage.Chat.Id] = true;
         await client.SendMessage(callbackMessage.Chat.Id, "📮 Send me your <b>Solana wallet address</b>.", parseMode: ParseMode.Html, cancellationToken: ct);
         return;

@@ -25,8 +25,9 @@ public class PortfolioService(
             KaminoFailed = kaminoTask.Result.Failed,
             Loopscale = loopscaleTask.Result.Value ?? new(),
             LoopscaleFailed = loopscaleTask.Result.Failed,
-            Exponent = exponentTask.Result.Value ?? new(),
-            ExponentFailed = exponentTask.Result.Failed
+            Exponent = exponentTask.Result.Value?.Positions ?? new(),
+            ExponentFailed = exponentTask.Result.Failed,
+            ExponentExtrasFailed = exponentTask.Result.Value?.ExtrasFailed ?? false
         };
     }
 

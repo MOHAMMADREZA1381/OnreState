@@ -71,13 +71,17 @@ public static class MessageFormatter
         foreach (var e in report.Exponent)
         {
             anyPosition = true;
-            sb.AppendLine($"\n🔹 <b>Exponent</b> · {Esc(e.Market)}");
+            sb.AppendLine($"\n🔹 <b>Exponent {Esc(e.Section)}</b> · {Esc(e.Market)}");
             foreach (var line in e.Details.Split('\n'))
                 sb.AppendLine($"   {Esc(line)}");
             AppendCachedTag(sb, e.CachedSeconds);
         }
 
-        if (!anyPosition && !report.KaminoFailed && !report.LoopscaleFailed && !report.ExponentFailed)
+        // Protected/Liquidity could not be loaded, so the list above may be incomplete
+        if (report.ExponentExtrasFailed && !report.ExponentFailed)
+            sb.AppendLine($"\n🔹 <b>Exponent Protected / Liquidity</b>\n   <i>{Unavailable}</i>");
+
+        if (!anyPosition && !report.KaminoFailed && !report.LoopscaleFailed && !report.ExponentFailed && !report.ExponentExtrasFailed)
             sb.AppendLine("\nNo active positions found.");
 
         return sb.ToString().TrimEnd();

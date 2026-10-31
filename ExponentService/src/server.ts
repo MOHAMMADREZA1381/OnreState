@@ -1,6 +1,7 @@
 import http from "node:http";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
+import { getExtras, getOnReMarkets, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
 const connection = new Connection(process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com", "confirmed");
@@ -83,9 +84,23 @@ async function getVault(address: string) {
   return { vault, decimals, ageMs: null as number | null };
 }
 
-async function getPositions(wallet: string, vaultAddresses: string[]) {
+async function getPositions(wallet: string, requestedVaults: string[]) {
   const owner = new PublicKey(wallet);
-  const [api, ytPrices] = await Promise.all([getApiPositions(wallet), getYtPrices(vaultAddresses)]);
+
+  // OnRe markets are discovered from the API, so new markets show up without a config change. The requested vaults
+  // (from the bot's config, e.g. matured markets no longer listed) are added on top. If discovery fails, use those alone.
+  let discovered: OnReMarket[] = [];
+  let discoveryFailed = false;
+  try {
+    discovered = (await getOnReMarkets()).markets;
+  } catch (e) {
+    console.error("Exponent markets unavailable:", String(e));
+    discoveryFailed = true;
+  }
+  const vaultAddresses = [...new Set([...requestedVaults, ...discovered.map((m) => m.vault)])];
+  const nameByVault = new Map(discovered.map((m) => [m.vault, m.name]));
+
+  const [api, ytPrices, extras] = await Promise.all([getApiPositions(wallet), getYtPrices(vaultAddresses), getExtras(wallet, discovered)]);
 
   const results = await Promise.all(
     vaultAddresses.map(async (address) => {
@@ -126,6 +141,7 @@ async function getPositions(wallet: string, vaultAddresses: string[]) {
 
       return {
         vault: address,
+        name: nameByVault.get(address) ?? null,
         yt,
         claimableInterest: claimable,
         expiresAt: vault.expirationDate.toISOString(),
@@ -141,7 +157,13 @@ async function getPositions(wallet: string, vaultAddresses: string[]) {
       };
     }),
   );
-  return results.filter((p) => p != null);
+  return {
+    positions: results.filter((p) => p != null),
+    tranches: extras.tranches,
+    liquidity: extras.liquidity,
+    extrasFailed: extras.failed || discoveryFailed,
+    extrasCachedAgeSeconds: extras.cachedAgeMs != null ? Math.floor(extras.cachedAgeMs / 1000) : null,
+  };
 }
 
 http.createServer(async (req, res) => {
@@ -154,11 +176,11 @@ http.createServer(async (req, res) => {
 
   try {
     const vaults = url.searchParams.getAll("vault");
-    const positions = await Promise.race([
+    const result = await Promise.race([
       getPositions(match[1], vaults),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), REQUEST_TIMEOUT_MS)),
     ]);
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ positions }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
   } catch (e) {
     console.error(e);
     res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: String(e) }));

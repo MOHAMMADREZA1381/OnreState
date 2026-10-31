@@ -5,10 +5,10 @@ using OnReBot.Models;
 
 namespace OnReBot.Services;
 
-// پوزیشن YT را از سرویس Node (ExponentService) می‌خواند.
+// پوزیشن‌های Exponent (Farm، Protected، Liquidity) را از سرویس Node (ExponentService) می‌خواند.
 public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : IExponentPositionProvider
 {
-    public async Task<List<ExponentPosition>> GetPositionsAsync(string wallet, CancellationToken ct)
+    public async Task<ExponentResult> GetPositionsAsync(string wallet, CancellationToken ct)
     {
         var vaults = string.Join("&", config.ExponentMarkets.Select(m => $"vault={m.Vault}"));
         var url = $"{config.ExponentServiceUrl.TrimEnd('/')}/positions/{wallet}?{vaults}";
@@ -18,18 +18,20 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
         return Parse(await response.Content.ReadAsStringAsync(ct), config.ExponentMarkets);
     }
 
-    public static List<ExponentPosition> Parse(string json, List<ExponentMarketConfig> markets)
+    public static ExponentResult Parse(string json, List<ExponentMarketConfig> markets)
     {
         var result = JsonSerializer.Deserialize<ExponentServiceResponse>(json, Json.Options) ?? new();
         var positions = new List<ExponentPosition>();
+
         foreach (var p in result.Positions)
         {
-            var name = markets.FirstOrDefault(m => m.Vault == p.Vault)?.Name ?? p.Vault;
-            var details = $"YT balance: {p.Yt.ToString("N2", CultureInfo.InvariantCulture)}"
+            // نام از config (اگر باشد)، وگرنه نامی که سرویس از روی مارکت ساخته، وگرنه آدرس vault
+            var name = markets.FirstOrDefault(m => m.Vault == p.Vault)?.Name ?? p.Name ?? p.Vault;
+            var details = $"YT balance: {Num(p.Yt)}"
                 + $"\nMaturity: {p.ExpiresAt.UtcDateTime:yyyy-MM-dd}"
-                + $"\nClaimable interest: {p.ClaimableInterest.ToString("N2", CultureInfo.InvariantCulture)}";
+                + $"\nClaimable interest: {Num(p.ClaimableInterest)}";
             if (p.CurrentValue != null)
-                details += $"\nCurrent value: ${p.CurrentValue.Value.ToString("N2", CultureInfo.InvariantCulture)}";
+                details += $"\nCurrent value: ${Num(p.CurrentValue.Value)}";
             if (p.AvgCostBasis != null)
                 details += $"\nAvg cost per YT: ${p.AvgCostBasis.Value.ToString("0.0000", CultureInfo.InvariantCulture)}";
 
@@ -51,10 +53,44 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
 
             if (p.Expired)
                 details += "\nStatus: matured";
-            positions.Add(new ExponentPosition { Market = name, Details = details, CachedSeconds = p.CachedAgeSeconds });
+            positions.Add(new ExponentPosition { Section = "Farm", Market = name, Details = details, CachedSeconds = p.CachedAgeSeconds });
         }
-        return positions;
+
+        // Protected: tranche سینیور/جونیور
+        foreach (var t in result.Tranches)
+        {
+            var side = t.Side == "senior" ? "Senior (protected)" : "Junior";
+            var details = $"Tranche: {side}"
+                + $"\nBalance: {t.LpBalance.ToString("0.######", CultureInfo.InvariantCulture)} {t.Symbol}"
+                + $"\nValue: {Value(t.ValueUsd)}";
+            if (t.Apy != null)
+                details += $"\nAPY: {Num(t.Apy.Value * 100)}%";
+            details += $"\nPnL: {Pnl(t.Pnl)}";
+            positions.Add(new ExponentPosition { Section = "Protected", Market = t.Symbol, Details = details, CachedSeconds = result.ExtrasCachedAgeSeconds });
+        }
+
+        // Liquidity: پوزیشن LP (رنج بر اساس APY)
+        foreach (var l in result.Liquidity)
+        {
+            var range = $"{Num(l.LowerApyPct)}% – {Num(l.UpperApyPct)}%";
+            var status = l.InRange switch { true => " (in range)", false => " (out of range)", _ => "" };
+            var details = $"Range: {range}{status}";
+            if (l.ValueUsd != null)
+                details += $"\nValue: {Value(l.ValueUsd.Value)}";
+            if (l.Pnl != null)
+                details += $"\nPnL (est.): {Pnl(l.Pnl.Value)}";
+            positions.Add(new ExponentPosition { Section = "Liquidity", Market = l.Name, Details = details, CachedSeconds = result.ExtrasCachedAgeSeconds });
+        }
+
+        return new ExponentResult { Positions = positions, ExtrasFailed = result.ExtrasFailed };
     }
+
+    private static string Num(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
+
+    // مقدارهای خیلی کوچک (گرد‌شده به صفر) را «<$0.01» نشان می‌دهد تا صفر غلط‌انداز نباشد
+    private static string Value(decimal usd) => usd > 0 && usd < 0.01m ? "<$0.01" : $"${Num(usd)}";
+
+    private static string Pnl(decimal usd) => Math.Abs(usd) < 0.005m ? "$0.00" : Signed(usd);
 
     // -$154.14 / +$203.18
     private static string Signed(decimal value) =>
@@ -64,11 +100,16 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
 public class ExponentServiceResponse
 {
     public List<ExponentServicePosition> Positions { get; set; } = new();
+    public List<ExponentServiceTranche> Tranches { get; set; } = new();
+    public List<ExponentServiceLiquidity> Liquidity { get; set; } = new();
+    public bool ExtrasFailed { get; set; }
+    public int? ExtrasCachedAgeSeconds { get; set; }
 }
 
 public class ExponentServicePosition
 {
     public string Vault { get; set; } = "";
+    public string? Name { get; set; }
     public decimal Yt { get; set; }
     public decimal ClaimableInterest { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
@@ -85,4 +126,24 @@ public class ExponentServicePosition
 
     // null: همه‌چیز تازه بود؛ عدد: بخشی از داده از کش سرویس Node آمده.
     public int? CachedAgeSeconds { get; set; }
+}
+
+public class ExponentServiceTranche
+{
+    public string Side { get; set; } = "";
+    public string Symbol { get; set; } = "";
+    public decimal LpBalance { get; set; }
+    public decimal ValueUsd { get; set; }
+    public decimal Pnl { get; set; }
+    public decimal? Apy { get; set; }
+}
+
+public class ExponentServiceLiquidity
+{
+    public string Name { get; set; } = "";
+    public decimal LowerApyPct { get; set; }
+    public decimal UpperApyPct { get; set; }
+    public bool? InRange { get; set; }
+    public decimal? ValueUsd { get; set; }
+    public decimal? Pnl { get; set; }
 }

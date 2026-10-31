@@ -34,7 +34,7 @@ public class CachedTagTests
     {
         var json = """{"positions":[{"vault":"7f1P","yt":10,"claimableInterest":0,"expiresAt":"2027-01-10T13:00:00.000Z","expired":false,"cachedAgeSeconds":42}]}""";
 
-        var p = Assert.Single(HttpExponentPositionProvider.Parse(json, new()));
+        var p = Assert.Single(HttpExponentPositionProvider.Parse(json, new()).Positions);
 
         Assert.Equal(42, p.CachedSeconds);
     }
@@ -44,7 +44,7 @@ public class CachedTagTests
     {
         var json = """{"positions":[{"vault":"7f1P","yt":10,"claimableInterest":0,"expiresAt":"2027-01-10T13:00:00.000Z","expired":false,"cachedAgeSeconds":null}]}""";
 
-        var p = Assert.Single(HttpExponentPositionProvider.Parse(json, new()));
+        var p = Assert.Single(HttpExponentPositionProvider.Parse(json, new()).Positions);
 
         Assert.Null(p.CachedSeconds);
     }

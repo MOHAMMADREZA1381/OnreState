@@ -141,7 +141,6 @@ public static class MessageFormatter
         }
     }
 
-    // برچسب «داده از کش آمده» تا کاربر بداند ممکن است کمی قدیمی باشد
     private static void AppendCachedTag(StringBuilder sb, int? cachedSeconds)
     {
         if (cachedSeconds == null) return;
@@ -151,7 +150,6 @@ public static class MessageFormatter
     private static string Age(int seconds) =>
         seconds < 60 ? $"{seconds}s" : $"{seconds / 60}m {seconds % 60}s";
 
-    // AbCdEf…wXyZ
     private static string Short(string address) =>
         address.Length > 12 ? $"{address[..6]}…{address[^4..]}" : address;
 

@@ -8,7 +8,6 @@ namespace OnReBot.Clients;
 
 public class KaminoClient(HttpClient http, BotConfig config)
 {
-    // بعد از 429 تا این زمان درخواست نمی‌فرستیم
     private DateTimeOffset _blockedUntil = DateTimeOffset.MinValue;
 
     public async Task<List<KaminoPosition>> GetPositionsAsync(string wallet, CancellationToken ct)
@@ -41,7 +40,6 @@ public class KaminoClient(HttpClient http, BotConfig config)
     public static List<KaminoObligation> ParseObligations(string json) =>
         JsonSerializer.Deserialize<List<KaminoObligation>>(json, Json.Options) ?? new();
 
-    // obligationهای اکتیو یک مارکت را جمع می‌زند؛ اگر هیچ‌کدام اکتیو نبود null برمی‌گرداند.
     public static KaminoPosition? BuildPosition(string marketName, List<KaminoObligation> obligations, List<KaminoReserve> reserves)
     {
         var position = new KaminoPosition { MarketName = marketName };

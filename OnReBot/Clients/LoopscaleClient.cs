@@ -9,8 +9,7 @@ public class LoopscaleClient(HttpClient http, BotConfig config)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
-    // این endpoint فیلتر ولت ندارد و همهٔ سپرده‌گذاران vault را برمی‌گرداند؛ پس پاسخ هر vault (مشترک بین همهٔ کاربران) کوتاه‌مدت کش می‌شود.
-    // کلید کش آدرس vault است، نه ولت کاربر. فقط پاسخ موفق کش می‌شود.
+
     private readonly Dictionary<string, (DateTimeOffset FetchedAt, Dictionary<string, long> Deposits)> _cache = new();
     private readonly SemaphoreSlim _lock = new(1, 1);
 
@@ -33,7 +32,6 @@ public class LoopscaleClient(HttpClient http, BotConfig config)
         return positions;
     }
 
-    // CachedFor: null یعنی همین الان از Loopscale گرفته شد؛ در غیر این صورت سن داده‌ی کش.
     private async Task<(Dictionary<string, long> Deposits, TimeSpan? CachedFor)> GetVaultDepositsAsync(string vaultAddress, CancellationToken ct)
     {
         await _lock.WaitAsync(ct);
@@ -67,7 +65,6 @@ public class LoopscaleClient(HttpClient http, BotConfig config)
         }
     }
 
-    // wallet -> amountSupplied (USDC با ۶ رقم اعشار) برای یک vault
     public static Dictionary<string, long> ParseDeposits(string json, string vaultAddress)
     {
         var vaults = JsonSerializer.Deserialize<List<LoopscaleVaultDeposits>>(json, Json.Options) ?? new();

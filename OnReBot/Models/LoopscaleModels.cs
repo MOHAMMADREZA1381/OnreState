@@ -16,9 +16,7 @@ public class LoopscalePosition
 {
     public string VaultName { get; set; } = "";
 
-    // USDC با ۶ رقم اعشار
     public decimal Usdc { get; set; }
 
-    // null: داده تازه است. عدد: داده از کش آمده و این‌قدر ثانیه قدمت دارد.
     public int? CachedSeconds { get; set; }
 }

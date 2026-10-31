@@ -1,6 +1,5 @@
 namespace OnReBot.Models;
 
-// فقط فیلدهای لازم از پاسخ حجیم Kamino
 public class KaminoObligation
 {
     public string ObligationAddress { get; set; } = "";

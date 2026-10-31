@@ -30,11 +30,9 @@ public class BotConfig
 
     public List<ExponentMarketConfig> ExponentMarkets { get; set; } = new();
 
-    // شناسهٔ عددی تلگرام ادمین؛ فقط این کاربر می‌تواند /stats بزند. فقط از متغیر محیطی ADMIN_USER_ID خوانده می‌شود
-    // (داخل فایل‌های ریپو نیست). 0 یعنی /stats غیرفعال است.
+
     public long AdminUserId { get; set; }
 
-    // آدرس سرویس ExponentService؛ اگر خالی باشد پوزیشن Exponent نمایش داده نمی‌شود.
     public string ExponentServiceUrl { get; set; } = "";
 
     public static BotConfig Load()

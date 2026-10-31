@@ -30,7 +30,6 @@ public class ExponentPoints
     public decimal Yt { get; set; }
     public decimal Lp { get; set; }
 
-    // کلیدها پویا هستند (مثل ONYC-JAN2027)
     public Dictionary<string, ExponentMarketPoints> Markets { get; set; } = new();
 }
 

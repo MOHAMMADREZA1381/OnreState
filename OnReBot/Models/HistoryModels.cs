@@ -32,6 +32,9 @@ public class ExponentTrade
     public decimal Sy { get; set; }
     public decimal Price { get; set; }
 
+    // true: the market has matured (it is no longer an active OnRe market)
+    public bool Matured { get; set; }
+
     // Value of the trade in USD (the API reports SY amounts, and 1 SY is worth $1, so this is the SY amount)
     public decimal ValueUsd { get; set; }
 }

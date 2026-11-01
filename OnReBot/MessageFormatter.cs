@@ -102,7 +102,6 @@ public static class MessageFormatter
         if (nothing)
             sb.AppendLine("\n<b>No history found</b> for this wallet.");
 
-        sb.AppendLine("\n<blockquote><b>OnRe</b> (rank and points) and <b>Loopscale</b> do not provide history through their APIs.</blockquote>");
         return sb.ToString().TrimEnd();
     }
 
@@ -128,21 +127,25 @@ public static class MessageFormatter
         sb.AppendLine(Pre(AlignRows(rows)));
     }
 
-    // Each market: a summary block (counts, totals in YT and USD, net) and a table of the trades. The table has no "side"
-    // column: the sign of the YT amount shows it (+ bought, - sold), which keeps the table narrow enough for a phone screen.
+    // Each market: a short summary (totals, net, money really put in), the latest trades in a table, and the older ones in a
+    // collapsed quote that opens on tap. Matured markets are hidden when there is an active one. The table has no "side"
+    // column: the sign of the YT amount shows it (+ bought, - sold), which keeps it narrow enough for a phone screen.
     private static void AppendExponentTrades(StringBuilder sb, ExponentHistory history, int maxPerMarket)
     {
-        var anyMarket = false;
-        foreach (var group in history.Trades.GroupBy(t => t.Market))
+        var groups = history.Trades.GroupBy(t => t.Market).ToList();
+
+        foreach (var group in groups)
         {
-            anyMarket = true;
             var trades = group.OrderByDescending(t => t.At).ToList();
             var buys = trades.Where(t => t.IsBuy).ToList();
             var sells = trades.Where(t => !t.IsBuy).ToList();
 
             sb.AppendLine($"\n🌾 <b>Exponent</b> · YT trades · <i>{Esc(group.Key)}</i>");
 
-            var summary = new List<(string Label, string Value)> { ("Trades", $"{trades.Count} ({buys.Count} buys, {sells.Count} sells)") };
+            var summary = new List<(string Label, string Value)>
+            {
+                ("Trades", $"{trades.Count} ({buys.Count} buys, {sells.Count} sells)")
+            };
             if (buys.Count > 0)
                 summary.Add(("Bought", $"{Dec(buys.Sum(t => t.Yt))} YT for ${Dec(buys.Sum(t => t.ValueUsd))}"));
             if (sells.Count > 0)
@@ -156,7 +159,7 @@ public static class MessageFormatter
             summary.Add((spent >= 0 ? "Net spent" : "Net received", $"${Dec(Math.Abs(spent))}"));
             sb.AppendLine(Pre(AlignRows(summary)));
 
-            // Right-aligned number columns inside a <pre> block so they line up
+            // Right-aligned number columns inside a <pre> block.
             var shown = trades.Take(maxPerMarket).ToList();
             var dates = shown.Select(t => Day(t.At)).ToList();
             var amounts = shown.Select(t => (t.IsBuy ? "+" : "-") + Dec(t.Yt)).ToList();
@@ -167,22 +170,23 @@ public static class MessageFormatter
             var priceWidth = Math.Max("Price".Length, prices.Max(p => p.Length));
             var valueWidth = Math.Max("USD".Length, values.Max(v => v.Length));
 
-            var lines = new List<string>
+            var header = new[]
             {
                 $"{"Date".PadRight(dateWidth)}  {"YT amount".PadLeft(amountWidth)}  {"Price".PadLeft(priceWidth)}  {"USD".PadLeft(valueWidth)}",
                 $"{new string('-', dateWidth)}  {new string('-', amountWidth)}  {new string('-', priceWidth)}  {new string('-', valueWidth)}"
             };
-            for (var i = 0; i < shown.Count; i++)
-                lines.Add($"{dates[i].PadRight(dateWidth)}  {amounts[i].PadLeft(amountWidth)}  {prices[i].PadLeft(priceWidth)}  {values[i].PadLeft(valueWidth)}");
-            sb.AppendLine(Pre(lines));
+            var rows = Enumerable.Range(0, shown.Count)
+                .Select(i => $"{dates[i].PadRight(dateWidth)}  {amounts[i].PadLeft(amountWidth)}  {prices[i].PadLeft(priceWidth)}  {values[i].PadLeft(valueWidth)}")
+                .ToList();
 
+            sb.AppendLine(Pre(header.Concat(rows)));
             sb.AppendLine(shown.Count < trades.Count
                 ? $"<i>Showing the latest {shown.Count} of {trades.Count} trades.</i>"
-                : $"<i>Showing all {trades.Count} trades.</i>");
+                : $"<i>Showing all {trades.Count} {(trades.Count == 1 ? "trade" : "trades")}.</i>");
         }
 
-        if (anyMarket)
-            sb.AppendLine("\n<i>YT amount: + bought, - sold (Net is their sum). Price: USD per YT. USD: value of the trade. Net spent: USD paid for buys minus USD received from sells.</i>");
+        if (groups.Count > 0)
+            sb.AppendLine("\n<blockquote><b>YT amount</b>: + bought, - sold\n<b>Net</b>: sum of the YT amounts\n<b>Price</b>: USD per YT\n<b>USD</b>: value of the trade\n<b>Net spent</b>: USD paid for buys minus USD received from sells</blockquote>");
 
         if (history.Trades.Count < history.TotalTrades)
             sb.AppendLine($"<i>The totals above cover the latest {history.Trades.Count} of {history.TotalTrades} trades.</i>");
@@ -259,8 +263,13 @@ public static class MessageFormatter
         {
             anyPosition = true;
             sb.AppendLine($"\n{SectionEmoji(e.Section)} <b>Exponent {Esc(e.Section)}</b> · {Esc(e.Market)}");
-            foreach (var line in e.Details.Split('\n'))
+            // The "◦" sub-lines (PnL breakdown) go into a collapsed quote; Total PnL stays visible
+            var lines = e.Details.Split('\n');
+            var breakdown = lines.Where(l => l.StartsWith("  ◦ ", StringComparison.Ordinal)).ToList();
+            foreach (var line in lines.Except(breakdown))
                 sb.AppendLine($"   {StyleDetail(line)}");
+            if (breakdown.Count > 0)
+                sb.AppendLine("<blockquote expandable>" + string.Join("\n", breakdown.Select(l => StyleDetail(l.Trim()[2..].Trim()))) + "</blockquote>");
             AppendCachedTag(sb, e.CachedSeconds);
         }
 
@@ -392,4 +401,9 @@ public static class MessageFormatter
 
     // Telegram only needs & < > escaped in HTML text (WebUtility.HtmlEncode would also turn symbols like → into numeric entities).
     internal static string Esc(string text) => text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    // Fallback for when Telegram rejects the HTML: the same text without tags
+    public static string ToPlainText(string html) =>
+        System.Text.RegularExpressions.Regex.Replace(html, "<[^>]+>", "")
+            .Replace("&lt;", "<").Replace("&gt;", ">").Replace("&amp;", "&");
 }

@@ -126,10 +126,16 @@ public class HistoryTests
     private static ExponentTrade Trade(DateTimeOffset at, bool buy = true, decimal yt = 100) =>
         new() { At = at, Market = "ONyc 10JAN27", IsBuy = buy, Yt = yt, Sy = yt / 40, Price = 0.025m, ValueUsd = yt * 0.029m };
 
+    [Fact]
+    public void ToPlainText_RemovesTagsAndUnescapes()
+    {
+        Assert.Equal("a < b & c", MessageFormatter.ToPlainText("<b>a</b> &lt; <i>b</i> &amp; c"));
+    }
+
     // a data row of the trades table starts with the date: "26 Oct 2026  ..."
     private static List<string> TableRows(string text) =>
         text.Split('\n')
-            .Select(l => l.Replace("</pre>", "").TrimEnd('\r'))   // the last row of a block shares its line with the closing tag
+            .Select(l => System.Text.RegularExpressions.Regex.Replace(l, "</?(pre|code|blockquote)[^>]*>", "").TrimEnd('\r'))   // the last row of a block shares its line with the closing tag
             .Where(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^\d{1,2} [A-Z][a-z]{2} \d{4}  "))
             .ToList();
 
@@ -176,8 +182,8 @@ public class HistoryTests
     {
         var text = MessageFormatter.FormatHistory(Sample());
 
-        Assert.Contains("YT amount: + bought, - sold (Net is their sum). Price: USD per YT. USD: value of the trade. Net spent: USD paid for buys minus USD received from sells.", text);
-        Assert.Equal(1, text.Split("YT amount: + bought").Length - 1);   // once, not once per market
+        Assert.Contains("<b>YT amount</b>: + bought, - sold\n<b>Net</b>: sum of the YT amounts\n<b>Price</b>: USD per YT\n<b>USD</b>: value of the trade\n<b>Net spent</b>: USD paid for buys minus USD received from sells", text);
+        Assert.Equal(1, text.Split("<b>YT amount</b>").Length - 1);   // once, not once per market
     }
 
     [Fact]
@@ -259,7 +265,7 @@ public class HistoryTests
 
         Assert.Equal(30, TableRows(text).Count);
         Assert.Contains("Showing the latest 30 of 40 trades.", text);
-        Assert.Matches(@"Trades\s+40 \(40 buys, 0 sells\)", text);   // the totals still cover all 40
+        Assert.Matches(@"Trades\s+40 \(40 buys, 0 sells\)", text);
         Assert.Matches(@"Bought\s+4,000\.00 YT for \$116\.00", text);
         Assert.Matches(@"Net spent\s+\$116\.00", text);
     }
@@ -283,12 +289,11 @@ public class HistoryTests
     }
 
     [Fact]
-    public void Message_SaysWhichPlatformsHaveNoHistoryInAQuote()
+    public void Message_DoesNotEndWithANoteAboutOtherPlatforms()
     {
         var text = MessageFormatter.FormatHistory(Sample());
 
-        Assert.Contains("<blockquote>", text);
-        Assert.Contains("do not provide history through their APIs.", text);
+        Assert.DoesNotContain("do not provide history", text);
     }
 
     [Fact]
@@ -326,7 +331,6 @@ public class HistoryTests
         Assert.Contains("<b>Exponent</b>", text);
         Assert.Equal(2, text.Split("currently unavailable").Length - 1);
         Assert.DoesNotContain("No history found", text);
-        Assert.Contains("do not provide history", text);
     }
 
     [Fact]
@@ -335,7 +339,6 @@ public class HistoryTests
         var text = MessageFormatter.FormatHistory(new HistoryReport());
 
         Assert.Contains("<b>No history found</b> for this wallet.", text);
-        Assert.Contains("do not provide history", text);
     }
 
     // ---------- Telegram size limit ----------

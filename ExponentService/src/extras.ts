@@ -198,13 +198,15 @@ export async function getExtras(wallet: string, onre: OnReMarket[]): Promise<Ext
 
 type ApiTrade = { vault_address: string; product: string; is_buy: boolean; in_amount: number; out_amount: number; price: number; trade_ts: string };
 
-export type Trade = { at: string; vault: string; name: string | null; side: "buy" | "sell"; yt: number; sy: number; price: number; valueUsd: number };
+export type Trade = { at: string; vault: string; name: string | null; matured: boolean; side: "buy" | "sell"; yt: number; sy: number; price: number; valueUsd: number };
 export type TradeHistory = { trades: Trade[]; total: number };
 
 // The API returns every YT trade of the wallet. Keep the ones in OnRe markets (plus the vaults the bot asked for, e.g.
 // matured markets), newest first. Amounts are raw 9-decimal units: for a sell, "in" is the YT sold and "out" the SY
 // received; for a buy it is the other way around. "price" is SY per YT.
-export async function getYtTrades(wallet: string, onre: OnReMarket[], extraVaults: string[]): Promise<TradeHistory> {
+// A market counts as matured when the (successfully loaded) list of OnRe markets no longer has it as active. If the
+// list could not be loaded nothing is marked, so no market is hidden by mistake.
+export async function getYtTrades(wallet: string, onre: OnReMarket[], extraVaults: string[], marketsKnown: boolean): Promise<TradeHistory> {
   const items = await apiGet<ApiTrade[]>(`/trades/user/yt/${wallet}`);
   const byVault = new Map(onre.map((m) => [m.vault, m]));
   const wanted = new Set([...byVault.keys(), ...extraVaults]);
@@ -221,6 +223,7 @@ export async function getYtTrades(wallet: string, onre: OnReMarket[], extraVault
       at: t.trade_ts,
       vault: t.vault_address,
       name: market?.name ?? null,
+      matured: marketsKnown && market?.status !== "active",
       side: t.is_buy ? "buy" : "sell",
       yt: (t.is_buy ? t.out_amount : t.in_amount) / scale,
       sy,

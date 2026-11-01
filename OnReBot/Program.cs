@@ -328,7 +328,16 @@ async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, str
             Console.Error.WriteLine($"Could not edit message, sending a new one: {ex.Message}");
         }
     }
-    await client.SendMessage(chatId, text, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
+    try
+    {
+        await client.SendMessage(chatId, text, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
+    }
+    catch (Exception ex) when (ex.Message.Contains("can't parse entities", StringComparison.OrdinalIgnoreCase))
+    {
+        // Safety net: a formatting mistake must not leave the user without a report
+        Console.Error.WriteLine($"HTML rejected, sending plain text: {ex.Message}");
+        await client.SendMessage(chatId, MessageFormatter.ToPlainText(text), replyMarkup: replyMarkup, cancellationToken: ct);
+    }
 }
 
 Task HandleError(ITelegramBotClient client, Exception exception, HandleErrorSource source, CancellationToken ct)

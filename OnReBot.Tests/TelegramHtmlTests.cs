@@ -37,6 +37,7 @@ internal static class TelegramHtml
                 else
                 {
                     if (open.Contains("pre") || open.Contains("code")) return $"<{name}> nested inside pre/code at {i}";
+                    if (name == "blockquote" && open.Contains("blockquote")) return $"nested blockquote at {i}";
                     open.Push(name);
                 }
                 i = close + 1;
@@ -69,6 +70,8 @@ public class TelegramHtmlTests
     [Theory]
     [InlineData("<b>ok</b> <i>fine</i> <code>1</code>", true)]
     [InlineData("<blockquote>quote <b>bold</b></blockquote>", true)]
+    [InlineData("<blockquote expandable><pre>x</pre></blockquote>", true)]
+    [InlineData("<blockquote>a<blockquote>b</blockquote></blockquote>", false)]
     [InlineData("<pre>a &lt; b &amp; c</pre>", true)]
     [InlineData("<b>unclosed", false)]
     [InlineData("<b>wrong</i>", false)]

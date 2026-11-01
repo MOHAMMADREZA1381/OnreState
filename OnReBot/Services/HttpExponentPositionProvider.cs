@@ -44,6 +44,7 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
                 Yt = t.Yt,
                 Sy = t.Sy,
                 Price = t.Price,
+                Matured = t.Matured,
                 ValueUsd = t.ValueUsd
             }).ToList()
         };
@@ -195,5 +196,6 @@ public class ExponentServiceTrade
     public decimal Yt { get; set; }
     public decimal Sy { get; set; }
     public decimal Price { get; set; }
+    public bool Matured { get; set; }
     public decimal ValueUsd { get; set; }
 }

@@ -197,12 +197,14 @@ async function prewarm() {
 async function getHistory(wallet: string, requestedVaults: string[]) {
   try {
     let onre: OnReMarket[] = [];
+    let marketsKnown = false;
     try {
       onre = (await getOnReMarkets()).markets;
+      marketsKnown = true;
     } catch (e) {
       console.error("Exponent markets unavailable:", String(e));
     }
-    const { trades, total } = await getYtTrades(wallet, onre, requestedVaults);
+    const { trades, total } = await getYtTrades(wallet, onre, requestedVaults, marketsKnown);
     return { trades, totalTrades: total, failed: false };
   } catch (e) {
     console.error("Exponent trade history unavailable:", String(e));

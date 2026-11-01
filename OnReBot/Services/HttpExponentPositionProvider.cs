@@ -18,6 +18,37 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
         return Parse(await response.Content.ReadAsStringAsync(ct), config.ExponentMarkets);
     }
 
+    public async Task<ExponentHistory> GetHistoryAsync(string wallet, CancellationToken ct)
+    {
+        var vaults = string.Join("&", config.ExponentMarkets.Select(m => $"vault={m.Vault}"));
+        var url = $"{config.ExponentServiceUrl.TrimEnd('/')}/history/{wallet}?{vaults}";
+
+        using var response = await http.GetAsync(url, ct);
+        response.EnsureSuccessStatusCode();
+        return ParseHistory(await response.Content.ReadAsStringAsync(ct), config.ExponentMarkets);
+    }
+
+    public static ExponentHistory ParseHistory(string json, List<ExponentMarketConfig> markets)
+    {
+        var result = JsonSerializer.Deserialize<ExponentServiceHistory>(json, Json.Options) ?? new();
+        return new ExponentHistory
+        {
+            Failed = result.Failed,
+            TotalTrades = result.TotalTrades,
+            Trades = result.Trades.Select(t => new ExponentTrade
+            {
+                At = t.At,
+                // Same naming rule as for positions: config name, then the name from the market, then the vault address
+                Market = markets.FirstOrDefault(m => m.Vault == t.Vault)?.Name ?? t.Name ?? t.Vault,
+                IsBuy = t.Side == "buy",
+                Yt = t.Yt,
+                Sy = t.Sy,
+                Price = t.Price,
+                ValueUsd = t.ValueUsd
+            }).ToList()
+        };
+    }
+
     public static ExponentResult Parse(string json, List<ExponentMarketConfig> markets)
     {
         var result = JsonSerializer.Deserialize<ExponentServiceResponse>(json, Json.Options) ?? new();
@@ -146,4 +177,23 @@ public class ExponentServiceLiquidity
     public bool? InRange { get; set; }
     public decimal? ValueUsd { get; set; }
     public decimal? Pnl { get; set; }
+}
+
+public class ExponentServiceHistory
+{
+    public List<ExponentServiceTrade> Trades { get; set; } = new();
+    public int TotalTrades { get; set; }
+    public bool Failed { get; set; }
+}
+
+public class ExponentServiceTrade
+{
+    public DateTimeOffset At { get; set; }
+    public string Vault { get; set; } = "";
+    public string? Name { get; set; }
+    public string Side { get; set; } = "";
+    public decimal Yt { get; set; }
+    public decimal Sy { get; set; }
+    public decimal Price { get; set; }
+    public decimal ValueUsd { get; set; }
 }

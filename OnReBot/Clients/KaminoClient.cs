@@ -15,21 +15,7 @@ public class KaminoClient(HttpClient http, BotConfig config)
         var positions = new List<KaminoPosition>();
         foreach (var market in config.KaminoMarkets)
         {
-            if (DateTimeOffset.UtcNow < _blockedUntil)
-                throw new HttpRequestException("Kamino rate limited");
-
-            var url = $"https://api.kamino.finance/kamino-market/{market.Address}/users/{wallet}/obligations?env=mainnet-beta";
-            using var response = await http.GetAsync(url, ct);
-
-            if (response.StatusCode == HttpStatusCode.TooManyRequests)
-            {
-                var wait = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
-                _blockedUntil = DateTimeOffset.UtcNow + wait;
-                throw new HttpRequestException("Kamino returned 429");
-            }
-            response.EnsureSuccessStatusCode();
-
-            var obligations = ParseObligations(await response.Content.ReadAsStringAsync(ct));
+            var obligations = ParseObligations(await GetJsonAsync(ObligationsUrl(market.Address, wallet), ct));
             var position = BuildPosition(market.Name, obligations, config.KaminoReserves);
             if (position != null)
                 positions.Add(position);
@@ -37,8 +23,71 @@ public class KaminoClient(HttpClient http, BotConfig config)
         return positions;
     }
 
+    // Net value over time of every active obligation (Kamino keeps daily snapshots).
+    public async Task<List<KaminoHistory>> GetHistoryAsync(string wallet, CancellationToken ct)
+    {
+        var result = new List<KaminoHistory>();
+        foreach (var market in config.KaminoMarkets)
+        {
+            var obligations = ParseObligations(await GetJsonAsync(ObligationsUrl(market.Address, wallet), ct));
+            foreach (var obligation in obligations.Where(IsActive))
+            {
+                var url = $"https://api.kamino.finance/v2/kamino-market/{market.Address}/obligations/{obligation.ObligationAddress}/metrics/history";
+                var history = BuildHistory(market.Name, await GetJsonAsync(url, ct));
+                if (history != null)
+                    result.Add(history);
+            }
+        }
+        return result;
+    }
+
+    private static string ObligationsUrl(string market, string wallet) =>
+        $"https://api.kamino.finance/kamino-market/{market}/users/{wallet}/obligations?env=mainnet-beta";
+
+    // One place for the rate-limit handling: after a 429 no request is sent until the wait is over.
+    private async Task<string> GetJsonAsync(string url, CancellationToken ct)
+    {
+        if (DateTimeOffset.UtcNow < _blockedUntil)
+            throw new HttpRequestException("Kamino rate limited");
+
+        using var response = await http.GetAsync(url, ct);
+
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            var wait = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
+            _blockedUntil = DateTimeOffset.UtcNow + wait;
+            throw new HttpRequestException("Kamino returned 429");
+        }
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadAsStringAsync(ct);
+    }
+
     public static List<KaminoObligation> ParseObligations(string json) =>
         JsonSerializer.Deserialize<List<KaminoObligation>>(json, Json.Options) ?? new();
+
+    // Summarizes the daily snapshots as first and last net value; null when there is no data at all.
+    public static KaminoHistory? BuildHistory(string marketName, string json)
+    {
+        var points = (JsonSerializer.Deserialize<KaminoHistoryResponse>(json, Json.Options)?.History ?? new())
+            .OrderBy(p => p.Timestamp)
+            .ToList();
+        if (points.Count == 0)
+            return null;
+
+        return new KaminoHistory
+        {
+            MarketName = marketName,
+            From = points[0].Timestamp,
+            To = points[^1].Timestamp,
+            FirstNetValueUsd = ToDecimal(points[0].RefreshedStats.NetAccountValue),
+            LastNetValueUsd = ToDecimal(points[^1].RefreshedStats.NetAccountValue),
+            Points = points.Count
+        };
+    }
+
+    private static bool IsActive(KaminoObligation obligation) =>
+        ToDecimal(obligation.RefreshedStats.UserTotalDeposit) > 0 || ToDecimal(obligation.RefreshedStats.UserTotalBorrow) > 0;
 
     public static KaminoPosition? BuildPosition(string marketName, List<KaminoObligation> obligations, List<KaminoReserve> reserves)
     {

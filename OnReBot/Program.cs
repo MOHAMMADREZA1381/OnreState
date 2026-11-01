@@ -50,6 +50,12 @@ var waitingForAddress = new ConcurrentDictionary<long, bool>();
 const int MaxReportsPerWindow = 2;
 var reportWindow = TimeSpan.FromMinutes(5);
 var reportTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// The quick summary is a single cheap request, so it gets a more generous limit than the full report.
+const int MaxSummariesPerWindow = 10;
+var summaryTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// History needs a few extra requests to Kamino and Exponent, so it has its own limit.
+const int MaxHistoryPerWindow = 3;
+var historyTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 const int MaxConcurrentReports = 5;
 var BusyAfter = TimeSpan.FromSeconds(15);
 var reportSlots = new SemaphoreSlim(MaxConcurrentReports, MaxConcurrentReports);
@@ -88,13 +94,66 @@ Task HandleUpdate(ITelegramBotClient client, Update update, CancellationToken ct
 
 async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationToken ct)
 {
+    // Step 2: the user tapped "Full report" under the quick summary.
+    if (update.CallbackQuery is { Message: { } fullMessage } fullCallback && ReportButtons.TryParseFull(fullCallback.Data, out var fullWallet))
+    {
+        var fullChatId = fullMessage.Chat.Id;
+        var now = DateTimeOffset.UtcNow;
+        var fullWait = TryTake(reportTimes, fullChatId, MaxReportsPerWindow, now, out var times);
+        if (fullWait != null)
+        {
+            await client.AnswerCallbackQuery(fullCallback.Id,
+                $"Rate limit reached: 2 full reports every 5 minutes. Try again in {Math.Ceiling(fullWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        // Answer first: Telegram only accepts the answer for a short time.
+        await client.AnswerCallbackQuery(fullCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(fullCallback.From.Id, ct);
+        await RemoveKeyboardAsync(client, fullChatId, fullMessage.Id, ct);
+
+        // The polling loop awaits this handler, so a slow report must not run here: it would block every other user.
+        _ = Task.Run(() => SendReportAsync(client, fullChatId, fullWallet, now, times, ct), ct);
+        return;
+    }
+
+    // Step 3: the user tapped "History" under the positions.
+    if (update.CallbackQuery is { Message: { } historyMessage } historyCallback && ReportButtons.TryParseHistory(historyCallback.Data, out var historyWallet))
+    {
+        var historyChatId = historyMessage.Chat.Id;
+        var historyNow = DateTimeOffset.UtcNow;
+        var historyWait = TryTake(historyTimes, historyChatId, MaxHistoryPerWindow, historyNow, out var historyUses);
+        if (historyWait != null)
+        {
+            await client.AnswerCallbackQuery(historyCallback.Id,
+                $"Rate limit reached: 3 history requests every 5 minutes. Try again in {Math.Ceiling(historyWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(historyCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(historyCallback.From.Id, ct);
+        await RemoveKeyboardAsync(client, historyChatId, historyMessage.Id, ct);
+        _ = Task.Run(() => SendHistoryAsync(client, historyChatId, historyWallet, historyNow, historyUses, ct), ct);
+        return;
+    }
+
+    // "No thanks": just remove the buttons.
+    if (update.CallbackQuery is { Data: ReportButtons.Decline, Message: { } declineMessage } declineCallback)
+    {
+        await client.AnswerCallbackQuery(declineCallback.Id, cancellationToken: ct);
+        await RemoveKeyboardAsync(client, declineMessage.Chat.Id, declineMessage.Id, ct);
+        return;
+    }
+
     if (update.CallbackQuery is { Data: "rank", Message: { } callbackMessage } callback)
     {
         // Answer first: Telegram only accepts the answer for a short time.
         await client.AnswerCallbackQuery(callback.Id, cancellationToken: ct);
         await users.RegisterAsync(callback.From.Id, ct);
         waitingForAddress[callbackMessage.Chat.Id] = true;
-        await client.SendMessage(callbackMessage.Chat.Id, "📮 Send me your <b>Solana wallet address</b>.", parseMode: ParseMode.Html, cancellationToken: ct);
+        await client.SendMessage(callbackMessage.Chat.Id, "📮 Send me your <b>Solana wallet address</b>.\n<blockquote>A base58 address, 32–44 characters.</blockquote>", parseMode: ParseMode.Html, cancellationToken: ct);
         return;
     }
 
@@ -110,14 +169,14 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
     if (text.StartsWith("/stats"))
     {
         if (config.AdminUserId != 0 && message.From?.Id == config.AdminUserId)
-            await client.SendMessage(chatId, $"👥 <b>Total users:</b> {users.Count:N0}", parseMode: ParseMode.Html, cancellationToken: ct);
+            await client.SendMessage(chatId, $"👥 <b>Total users:</b> <code>{users.Count:N0}</code>", parseMode: ParseMode.Html, cancellationToken: ct);
         return;
     }
 
     if (text.StartsWith("/start"))
     {
         var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🏆 My Rank", "rank"));
-        await client.SendMessage(chatId, "👋 <b>Welcome!</b>\nCheck your OnRe rank, points, and your active positions on Kamino, Loopscale and Exponent.\n\nTap the button below to start.\n\n💙 Support my content: follow <a href=\"https://x.com/BoombasticZZ\">@BoombasticZZ</a> on X (Twitter).",
+        await client.SendMessage(chatId, "👋 <b>Welcome!</b>\n\nCheck your <b>OnRe rank</b>, <b>points</b> and <b>active positions</b> on <b>Kamino</b>, <b>Loopscale</b> and <b>Exponent</b>.\n\n<blockquote>Tap <b>🏆 My Rank</b> below to start.</blockquote>\n\n💙 <i>Support my content:</i> follow <a href=\"https://x.com/BoombasticZZ\">@BoombasticZZ</a> on X (Twitter).",
             parseMode: ParseMode.Html, replyMarkup: keyboard,
             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true }, cancellationToken: ct);
         return;
@@ -125,44 +184,78 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
 
     if (!waitingForAddress.ContainsKey(chatId))
     {
-        await client.SendMessage(chatId, "Send /start to begin.", parseMode: ParseMode.Html, cancellationToken: ct);
+        await client.SendMessage(chatId, "👋 Send <code>/start</code> to begin.", parseMode: ParseMode.Html, cancellationToken: ct);
         return;
     }
 
     var wallet = text.Trim();
     if (!AddressValidator.IsValid(wallet))
     {
-        await client.SendMessage(chatId, "❌ <b>Invalid wallet address.</b>\nSend a valid Solana address (base58, 32–44 characters).",
+        await client.SendMessage(chatId, "❌ <b>Invalid wallet address</b>\n<blockquote>Send a valid Solana address (base58, 32–44 characters).</blockquote>",
             parseMode: ParseMode.Html, cancellationToken: ct);
         return;
     }
 
-    var now = DateTimeOffset.UtcNow;
-    var times = reportTimes.GetOrAdd(chatId, _ => new List<DateTimeOffset>());
-    TimeSpan? wait = null;
-    lock (times)
-    {
-        times.RemoveAll(t => now - t >= reportWindow);
-        if (times.Count >= MaxReportsPerWindow)
-            wait = reportWindow - (now - times[0]);
-        else
-            times.Add(now);
-    }
+    var wait = TryTake(summaryTimes, chatId, MaxSummariesPerWindow, DateTimeOffset.UtcNow, out _);
     if (wait != null)
     {
         await client.SendMessage(chatId,
-            $"⏳ <b>Rate limit reached.</b>\nYou can request 2 reports every 5 minutes. Try again in {Math.Ceiling(wait.Value.TotalSeconds)}s.",
+            $"⏳ <b>Rate limit reached</b>\n<blockquote>Try again in <b>{Math.Ceiling(wait.Value.TotalSeconds)}s</b>.</blockquote>",
             parseMode: ParseMode.Html, cancellationToken: ct);
         return;
     }
     waitingForAddress.TryRemove(chatId, out _);
 
-    // The polling loop awaits this handler, so a slow report must not run here: it would block every other user.
-    _ = Task.Run(() => SendReportAsync(client, chatId, wallet, now, times, ct), ct);
+    // Step 1: rank and points right away, then ask whether the user wants the positions too.
+    var summary = await portfolio.GetSummaryAsync(wallet, ct);
+    await client.SendMessage(chatId, MessageFormatter.FitToTelegram(MessageFormatter.FormatSummary(summary.OnRe, summary.Failed)),
+        parseMode: ParseMode.Html, replyMarkup: ReportButtons.Keyboard(wallet), cancellationToken: ct);
 }
 
-// At most MaxConcurrentReports run at once (protects the small server's RAM). Extra requests wait a little, then get a "busy" reply.
-async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct)
+// Sliding window per user. Returns null (and records the use) when allowed, otherwise how long the user has to wait.
+TimeSpan? TryTake(ConcurrentDictionary<long, List<DateTimeOffset>> store, long key, int max, DateTimeOffset now, out List<DateTimeOffset> times)
+{
+    times = store.GetOrAdd(key, _ => new List<DateTimeOffset>());
+    lock (times)
+    {
+        times.RemoveAll(t => now - t >= reportWindow);
+        if (times.Count >= max)
+            return reportWindow - (now - times[0]);
+        times.Add(now);
+        return null;
+    }
+}
+
+// Removes the buttons from a message (so a second tap cannot start another report). Failures are not important.
+async Task RemoveKeyboardAsync(ITelegramBotClient client, long chatId, int messageId, CancellationToken ct)
+{
+    try
+    {
+        await client.EditMessageReplyMarkup(chatId, messageId, replyMarkup: null, cancellationToken: ct);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        Console.Error.WriteLine($"Could not remove buttons: {ex.Message}");
+    }
+}
+
+// Step 2: the positions of the wallet.
+Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching your report…</i>",
+        async () => MessageFormatter.FormatPositions(await portfolio.GetReportAsync(wallet, ct)), // rank and points were already shown in step 1
+        retryKeyboard: ReportButtons.Keyboard(wallet), finalKeyboard: ReportButtons.HistoryKeyboard(wallet), ct);
+
+// Step 3: recent changes from the platforms' own APIs.
+Task SendHistoryAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching history…</i>",
+        async () => MessageFormatter.FormatHistory(await portfolio.GetHistoryAsync(wallet, ct)),
+        retryKeyboard: ReportButtons.HistoryKeyboard(wallet), finalKeyboard: null, ct);
+
+// At most MaxConcurrentReports jobs run at once (protects the small server's RAM). Extra requests wait a little, then get a "busy" reply.
+// The user sees a placeholder right away, which is replaced by the result. A job that never ran or failed does not count against the
+// user's limit, and the retry buttons come back so they can simply tap again.
+async Task RunJobAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, string placeholderText,
+    Func<Task<string>> buildText, InlineKeyboardMarkup retryKeyboard, InlineKeyboardMarkup? finalKeyboard, CancellationToken ct)
 {
     var gotSlot = false;
     int? placeholderId = null;
@@ -171,29 +264,27 @@ async Task SendReportAsync(ITelegramBotClient client, long chatId, string wallet
         gotSlot = await reportSlots.WaitAsync(BusyAfter, ct);
         if (!gotSlot)
         {
-            // The report never ran, so it must not count against the user's limit; let them resend the address.
             lock (times) times.Remove(requestedAt);
-            waitingForAddress[chatId] = true;
-            await client.SendMessage(chatId, "🚦 <b>The bot is busy right now.</b>\nPlease send your address again in a few seconds.",
-                parseMode: ParseMode.Html, cancellationToken: ct);
+            await client.SendMessage(chatId, "🚦 <b>The bot is busy right now</b>\n<i>Please tap the button again in a few seconds.</i>",
+                parseMode: ParseMode.Html, replyMarkup: retryKeyboard, cancellationToken: ct);
             return;
         }
 
-        // Immediate feedback: the report can take a few seconds, so say so right away and replace this message when it is ready.
-        placeholderId = await TrySendAsync(client, chatId, "⏳ Fetching your report…", ct);
+        // Immediate feedback: this can take a few seconds, so say so right away and replace the message when the result is ready.
+        placeholderId = await TrySendAsync(client, chatId, placeholderText, ct);
 
-        var report = await portfolio.GetReportAsync(wallet, ct);
+        var text = await buildText();
         reportSlots.Release();
         gotSlot = false;
-        await ShowAsync(client, chatId, placeholderId, MessageFormatter.Format(report), ct);
+        await ShowAsync(client, chatId, placeholderId, text, finalKeyboard, ct);
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        Console.Error.WriteLine($"Report failed: {ex.GetType().Name}: {ex.Message}");
+        Console.Error.WriteLine($"Job failed: {ex.GetType().Name}: {ex.Message}");
         lock (times) times.Remove(requestedAt);
         try
         {
-            await ShowAsync(client, chatId, placeholderId, "⚠️ <b>Something went wrong.</b>\nPlease try again in a moment.", ct);
+            await ShowAsync(client, chatId, placeholderId, "⚠️ <b>Something went wrong</b>\n<i>Please try again in a moment.</i>", retryKeyboard, ct);
         }
         catch (Exception sendEx)
         {
@@ -222,13 +313,14 @@ async Task<int?> TrySendAsync(ITelegramBotClient client, long chatId, string tex
 }
 
 // Replaces the placeholder with the final text; if that is not possible, sends the text as a new message.
-async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, string text, CancellationToken ct)
+async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, string text, InlineKeyboardMarkup? replyMarkup, CancellationToken ct)
 {
+    text = MessageFormatter.FitToTelegram(text);
     if (messageId != null)
     {
         try
         {
-            await client.EditMessageText(chatId, messageId.Value, text, parseMode: ParseMode.Html, cancellationToken: ct);
+            await client.EditMessageText(chatId, messageId.Value, text, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
             return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -236,7 +328,7 @@ async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, str
             Console.Error.WriteLine($"Could not edit message, sending a new one: {ex.Message}");
         }
     }
-    await client.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+    await client.SendMessage(chatId, text, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
 }
 
 Task HandleError(ITelegramBotClient client, Exception exception, HandleErrorSource source, CancellationToken ct)

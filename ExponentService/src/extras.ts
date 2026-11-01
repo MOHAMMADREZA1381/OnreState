@@ -193,3 +193,43 @@ export async function getExtras(wallet: string, onre: OnReMarket[]): Promise<Ext
 
   return extras;
 }
+
+// ---------- Trade history (YT) ----------
+
+type ApiTrade = { vault_address: string; product: string; is_buy: boolean; in_amount: number; out_amount: number; price: number; trade_ts: string };
+
+export type Trade = { at: string; vault: string; name: string | null; side: "buy" | "sell"; yt: number; sy: number; price: number; valueUsd: number };
+export type TradeHistory = { trades: Trade[]; total: number };
+
+// The API returns every YT trade of the wallet. Keep the ones in OnRe markets (plus the vaults the bot asked for, e.g.
+// matured markets), newest first. Amounts are raw 9-decimal units: for a sell, "in" is the YT sold and "out" the SY
+// received; for a buy it is the other way around. "price" is SY per YT.
+export async function getYtTrades(wallet: string, onre: OnReMarket[], extraVaults: string[]): Promise<TradeHistory> {
+  const items = await apiGet<ApiTrade[]>(`/trades/user/yt/${wallet}`);
+  const byVault = new Map(onre.map((m) => [m.vault, m]));
+  const wanted = new Set([...byVault.keys(), ...extraVaults]);
+
+  const mine = items
+    .filter((t) => t.product.toLowerCase() === "yt" && wanted.has(t.vault_address))
+    .sort((a, b) => b.trade_ts.localeCompare(a.trade_ts));
+
+  const trades = mine.slice(0, 100).map((t): Trade => {
+    const market = byVault.get(t.vault_address);
+    const scale = 10 ** (market?.decimals ?? 9);
+    const sy = (t.is_buy ? t.in_amount : t.out_amount) / scale;
+    return {
+      at: t.trade_ts,
+      vault: t.vault_address,
+      name: market?.name ?? null,
+      side: t.is_buy ? "buy" : "sell",
+      yt: (t.is_buy ? t.out_amount : t.in_amount) / scale,
+      sy,
+      price: t.price,
+      // The SY amounts of the API are already in USD terms (1 SY is worth $1): checked on-chain, where the wallet received
+      // 27.12 ONyc for a trade the API reports as 31.45 SY, and 27.12 x 1.1595 (the ONyc/USD rate of that day) = 31.45.
+      // So no exchange rate has to be applied.
+      valueUsd: sy,
+    };
+  });
+  return { trades, total: mine.length };
+}

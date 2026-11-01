@@ -100,7 +100,7 @@ public class ExponentExtrasTests
     {
         var report = new PortfolioReport { Exponent = { new ExponentPosition { Section = "Protected", Market = "srONyc", Details = "Value: $1.00" } } };
 
-        Assert.Contains("🔹 <b>Exponent Protected</b> · srONyc", MessageFormatter.Format(report));
+        Assert.Contains("🛡 <b>Exponent Protected</b> · srONyc", MessageFormatter.Format(report));
     }
 
     [Fact]

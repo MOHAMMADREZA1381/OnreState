@@ -28,15 +28,15 @@ public class MessageFormatterTests
         Assert.Contains("Rank: <b>#1,427</b>", text);
         Assert.Contains("Total points: <b>22,543,333</b>", text);
         Assert.Contains("• Exponent: <b>20,342,393</b>", text);
-        Assert.Contains("◦ ONYC-JAN2027: 6,838,325", text);
+        Assert.Contains("◦ ONYC-JAN2027: <code>6,838,325</code>", text);
         Assert.DoesNotContain("• Wallet:", text);         // wallet-balance points are intentionally not listed
         Assert.DoesNotContain("SEP-2026", text);          // zero markets are hidden
         Assert.DoesNotContain("Orca", text);              // zero platforms are hidden
         Assert.Contains("<b>Kamino</b> · OnRe Market", text);
-        Assert.Contains("Deposit: 10.00 ONyc (≈ $11.60)", text);
-        Assert.Contains("Debt: none", text);
+        Assert.Contains("Deposit: <b>10.00 ONyc</b> (≈ <b>$11.60</b>)", text);
+        Assert.Contains("Debt: <b>none</b>", text);
         Assert.Contains("<b>Loopscale</b> · USDC OnRe", text);
-        Assert.Contains("Deposit: 5.98 USDC", text);
+        Assert.Contains("Deposit: <b>5.98 USDC</b>", text);
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public class MessageFormatterTests
 
         var text = MessageFormatter.Format(report);
 
-        Assert.Contains("<b>Kamino</b>\n   <i>currently unavailable</i>", text.Replace("\r\n", "\n"));
+        Assert.Contains("<b>Kamino</b>\n   ⚠️ <i>currently unavailable</i>", text.Replace("\r\n", "\n"));
         Assert.Contains("Rank: <b>#1,427</b>", text);
         Assert.Contains("Loopscale</b> · USDC OnRe", text);
     }
@@ -78,7 +78,7 @@ public class MessageFormatterTests
 
         var text = MessageFormatter.Format(report);
 
-        Assert.Contains("No activity found for this wallet.", text);
+        Assert.Contains("<b>No activity found</b> for this wallet.", text);
         Assert.DoesNotContain("24,948", text);
         Assert.DoesNotContain("Rank", text);
     }
@@ -94,8 +94,8 @@ public class MessageFormatterTests
 
         var text = MessageFormatter.Format(report);
 
-        Assert.Contains("OnRe points: <i>none yet</i>", text);
-        Assert.Contains("Deposit: 2.00 USDC", text);
+        Assert.Contains("<b>OnRe points</b>: <i>none yet</i>", text);
+        Assert.Contains("Deposit: <b>2.00 USDC</b>", text);
         Assert.DoesNotContain("#24,948", text);
     }
 }

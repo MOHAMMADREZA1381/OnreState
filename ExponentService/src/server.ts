@@ -1,7 +1,7 @@
 import http from "node:http";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getExtras, getOnReMarkets, timed, type OnReMarket } from "./extras.js";
+import { getExtras, getOnReMarkets, getYtTrades, timed, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
 const connection = new Connection(process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com", "confirmed");
@@ -192,8 +192,34 @@ async function prewarm() {
   }
 }
 
+// History: recent YT trades. A failure is reported as failed=true (HTTP 200) so the bot can say "unavailable" for this
+// part only instead of treating it as an error.
+async function getHistory(wallet: string, requestedVaults: string[]) {
+  try {
+    let onre: OnReMarket[] = [];
+    try {
+      onre = (await getOnReMarkets()).markets;
+    } catch (e) {
+      console.error("Exponent markets unavailable:", String(e));
+    }
+    const { trades, total } = await getYtTrades(wallet, onre, requestedVaults);
+    return { trades, totalTrades: total, failed: false };
+  } catch (e) {
+    console.error("Exponent trade history unavailable:", String(e));
+    return { trades: [], totalTrades: 0, failed: true };
+  }
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
+
+  const historyMatch = url.pathname.match(/^\/history\/([1-9A-HJ-NP-Za-km-z]{32,44})$/);
+  if (historyMatch) {
+    const history = await getHistory(historyMatch[1], url.searchParams.getAll("vault"));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(history));
+    return;
+  }
+
   const match = url.pathname.match(/^\/positions\/([1-9A-HJ-NP-Za-km-z]{32,44})$/);
   if (!match) {
     res.writeHead(404).end();

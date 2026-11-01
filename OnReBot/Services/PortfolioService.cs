@@ -9,6 +9,32 @@ public class PortfolioService(
     LoopscaleClient loopscale,
     IExponentPositionProvider exponent)
 {
+    // Step 1 of the report: only rank and points (a single fast request to OnRe).
+    public async Task<(OnReResponse? OnRe, bool Failed)> GetSummaryAsync(string wallet, CancellationToken ct)
+    {
+        var result = await Safe(() => onRe.GetPointsAsync(wallet, ct));
+        return (result.Value, result.Failed);
+    }
+
+    // Recent changes straight from the platforms' own APIs (nothing is stored by the bot). Only Kamino and Exponent offer history.
+    public async Task<HistoryReport> GetHistoryAsync(string wallet, CancellationToken ct)
+    {
+        var kaminoTask = Safe(() => kamino.GetHistoryAsync(wallet, ct));
+        var exponentTask = Safe(() => exponent.GetHistoryAsync(wallet, ct));
+        await Task.WhenAll(kaminoTask, exponentTask);
+
+        var exponentHistory = exponentTask.Result.Value ?? new ExponentHistory();
+        if (exponentTask.Result.Failed)
+            exponentHistory.Failed = true;
+
+        return new HistoryReport
+        {
+            Kamino = kaminoTask.Result.Value ?? new(),
+            KaminoFailed = kaminoTask.Result.Failed,
+            Exponent = exponentHistory
+        };
+    }
+
     public async Task<PortfolioReport> GetReportAsync(string wallet, CancellationToken ct)
     {
         var onReTask = Safe(() => onRe.GetPointsAsync(wallet, ct));

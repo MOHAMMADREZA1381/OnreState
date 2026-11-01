@@ -4,6 +4,19 @@ A Telegram bot that shows the **OnRe rank and points** of a Solana wallet, plus 
 
 Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address.
 
+## How it works (step by step)
+
+1. `/start`, then **🏆 My Rank**, then you send your wallet address.
+2. The bot answers right away with your **rank and points** (one fast request) and asks whether you want the positions too: **✅ Full report** or **❌ No thanks**. The question notes that all requests are sent from a single IP address, so some data may be temporarily unavailable.
+3. If you tap **Full report**, a second message follows with your **active positions** (Kamino, Loopscale, Exponent). Tapping the button also removes it, so one tap starts exactly one report.
+
+4. Under the positions there is a **📈 History** button. It shows recent changes taken from the platforms' own APIs:
+   - **Kamino**: net value of your obligation over the available daily snapshots (for example `$11.6048 → $11.6148`).
+   - **Exponent**: your YT trades per market with totals (how many buys and sells, YT and USD bought and sold, the net YT and the **net spent**: USD paid for buys minus USD received from sells, because "bought" also counts purchases paid with the proceeds of earlier sales) and a table of the trades themselves (full date, YT amount with a `+` for bought and `-` for sold, price in USD per YT and the value of the trade in USD; up to 30 per market, newest first). The API reports amounts in SY, which are USD-denominated (1 SY is worth $1; checked against the token movements of real transactions on-chain), so no exchange rate is applied.
+   - **OnRe (rank and points) and Loopscale** do not offer history through their APIs, so nothing is shown for them and the message says so.
+
+The wallet address travels inside the buttons themselves (Telegram callback data), so the bot does not need to remember anything between the steps. Nothing is stored for the history either: it is read from the platforms each time.
+
 ## What it shows
 
 - Rank and total points from the OnRe rewards API, with a per-platform breakdown (only non-zero platforms).
@@ -88,7 +101,7 @@ For local runs you can keep these in a file named `run-local.ps1`; that name is 
 ## Behavior
 
 - The wallet address is validated before any request (base58, 32 to 44 characters).
-- Rate limit: at most 2 reports per user every 5 minutes. At most 5 reports run at the same time; extra requests wait briefly and then get a "busy" reply.
+- Rate limit: at most 2 full reports per user every 5 minutes, and at most 10 quick summaries (rank and points) every 5 minutes and at most 3 history requests every 5 minutes. At most 5 reports run at the same time; extra requests wait briefly and then get a "busy" reply.
 - Speed: a typical report (no tranche position) takes about 1 to 1.5 seconds. Exponent vault state is refreshed in the background so the first user after a quiet period does not wait for it, and all positions are read from the Solana RPC with a single call. The bot answers immediately with a "Fetching your report…" message and replaces it with the report. The slowest step is Exponent's tranche stats endpoint (3 to 6 seconds), which is only called for wallets that hold a Protected (tranche) position.
 - Every HTTP request has a 10 second timeout (the local Exponent service gets 25 seconds because it talks to the Solana RPC).
 - Caching is intentionally minimal. Only data shared by all users is cached, briefly: the Loopscale depositor list (30 s), the Exponent YT price (30 s), and the Exponent vault state and market lists (5 min). Anything served from a cache is tagged in the message (`🕒 cached data · 12s old`). Wallet-specific data (OnRe, Kamino, your Exponent position and PnL) is always fetched fresh.

@@ -144,8 +144,9 @@ async function getPositions(wallet: string, requestedVaults: string[]) {
       const realizedPnl = stats ? stats.totalRealizedPnlLamports / 10 ** stats.decimals : null;
       const priceAppreciation =
         ytPrice != null && stats ? (stats.totalSizeLamports / 10 ** stats.decimals) * (ytPrice - stats.avgCostBasis) : null;
-      // 1 ONyc = currentSyExchangeRate USD (confirmed against Kamino). This part is not verified with real data because it was zero in testing.
-      const unclaimedYieldUsd = claimable * vault.currentSyExchangeRate;
+      // Checked against a real claim: 11.20 claimable showed as 13.01 here (claimable × rate), and after the claim the Exponent
+      // app recorded +9.64 of Claimed yield, which is claimable / rate (11.20 / 1.1616). So divide, don't multiply.
+      const unclaimedYieldUsd = claimable / vault.currentSyExchangeRate;
       const totalPnl =
         priceAppreciation != null && realizedPnl != null && stats
           ? priceAppreciation + stats.claimedInterestUsd + realizedPnl + unclaimedYieldUsd

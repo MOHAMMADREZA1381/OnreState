@@ -35,6 +35,9 @@ public class BotConfig
 
     public string ExponentServiceUrl { get; set; } = "";
 
+    // Free API key of the Titan Developers Portal (environment variable only). Without it Titan is simply not shown.
+    public string? TitanApiKey { get; set; }
+
     public static BotConfig Load()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Config", "appsettings.json");
@@ -42,6 +45,8 @@ public class BotConfig
 
         if (long.TryParse(Environment.GetEnvironmentVariable("ADMIN_USER_ID"), out var adminId))
             config.AdminUserId = adminId;
+
+        config.TitanApiKey = Environment.GetEnvironmentVariable("TITAN_API_KEY");
         return config;
     }
 }

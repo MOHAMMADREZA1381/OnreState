@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using OnReBot;
 using OnReBot.Clients;
 using OnReBot.Config;
+using OnReBot.Models;
 using OnReBot.Services;
 using Telegram.Bot;
 using Telegram.Bot.Polling;
@@ -20,6 +21,9 @@ var config = BotConfig.Load();
 
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 http.DefaultRequestHeaders.UserAgent.ParseAdd("OnReBot/1.0 (telegram rank bot)");
+
+var jupiter = new JupiterClient(http);
+var titan = new TitanClient(http, config.TitanApiKey);
 
 var portfolio = new PortfolioService(
     new OnReClient(http),
@@ -56,6 +60,15 @@ var summaryTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // History needs a few extra requests to Kamino and Exponent, so it has its own limit.
 const int MaxHistoryPerWindow = 3;
 var historyTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// The market overview is shared data that the Node service caches, so it is cheap; the limit only stops button spam.
+const int MaxMarketsPerWindow = 5;
+var marketsTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+var swapTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// The calculator asks Jupiter for about five quotes per amount and the amount differs per user (so nothing can be shared), hence a tighter limit.
+const int MaxCalcPerWindow = 3;
+var calcTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// Chats that are about to type an amount for the calculator (true = buy ONyc with USDC, false = sell ONyc).
+var waitingForAmount = new ConcurrentDictionary<long, bool>();
 const int MaxConcurrentReports = 5;
 var BusyAfter = TimeSpan.FromSeconds(15);
 var reportSlots = new SemaphoreSlim(MaxConcurrentReports, MaxConcurrentReports);
@@ -147,11 +160,77 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
         return;
     }
 
-    if (update.CallbackQuery is { Data: "rank", Message: { } callbackMessage } callback)
+    // Market overview: no wallet needed.
+    if (update.CallbackQuery is { Data: ReportButtons.Markets, Message: { } marketsMessage } marketsCallback)
+    {
+        var marketsChatId = marketsMessage.Chat.Id;
+        var marketsNow = DateTimeOffset.UtcNow;
+        var marketsWait = TryTake(marketsTimes, marketsChatId, MaxMarketsPerWindow, marketsNow, out var marketsUses);
+        if (marketsWait != null)
+        {
+            await client.AnswerCallbackQuery(marketsCallback.Id,
+                $"Rate limit reached: 5 market requests every 5 minutes. Try again in {Math.Ceiling(marketsWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(marketsCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(marketsCallback.From.Id, ct);
+        _ = Task.Run(() => SendMarketsAsync(client, marketsChatId, marketsNow, marketsUses, ct), ct);
+        return;
+    }
+
+    // Calculator: first the direction, then the user types an amount.
+    if (update.CallbackQuery is { Data: ReportButtons.Calc, Message: { } calcMessage } calcCallback)
+    {
+        await client.AnswerCallbackQuery(calcCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(calcCallback.From.Id, ct);
+        await client.SendMessage(calcMessage.Chat.Id, "🧮 <b>Calculator</b>\n<blockquote>What do you want to convert?</blockquote>",
+            parseMode: ParseMode.Html, replyMarkup: ReportButtons.CalcChoiceKeyboard(), cancellationToken: ct);
+        return;
+    }
+
+    if (update.CallbackQuery is { Data: ReportButtons.CalcBuy or ReportButtons.CalcSell, Message: { } calcChoiceMessage } calcChoice)
+    {
+        var buy = calcChoice.Data == ReportButtons.CalcBuy;
+        await client.AnswerCallbackQuery(calcChoice.Id, cancellationToken: ct);
+        await users.RegisterAsync(calcChoice.From.Id, ct);
+        await RemoveKeyboardAsync(client, calcChoiceMessage.Chat.Id, calcChoiceMessage.Id, ct);
+        waitingForAddress.TryRemove(calcChoiceMessage.Chat.Id, out _);
+        waitingForAmount[calcChoiceMessage.Chat.Id] = buy;
+        await client.SendMessage(calcChoiceMessage.Chat.Id,
+            buy ? "💵 Send the amount of <b>USDC</b> you want to convert to ONyc.\n<blockquote>For example: <code>100</code></blockquote>"
+                : "🪙 Send the amount of <b>ONyc</b> you want to convert to USDC.\n<blockquote>For example: <code>50</code></blockquote>",
+            parseMode: ParseMode.Html, cancellationToken: ct);
+        return;
+    }
+
+    // Swap rates: no wallet needed.
+    if (update.CallbackQuery is { Data: ReportButtons.Swap, Message: { } swapMessage } swapCallback)
+    {
+        var swapChatId = swapMessage.Chat.Id;
+        var swapNow = DateTimeOffset.UtcNow;
+        var swapWait = TryTake(swapTimes, swapChatId, MaxMarketsPerWindow, swapNow, out var swapUses);
+        if (swapWait != null)
+        {
+            await client.AnswerCallbackQuery(swapCallback.Id,
+                $"Rate limit reached: 5 swap-rate requests every 5 minutes. Try again in {Math.Ceiling(swapWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(swapCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(swapCallback.From.Id, ct);
+        _ = Task.Run(() => SendSwapRatesAsync(client, swapChatId, swapNow, swapUses, ct), ct);
+        return;
+    }
+
+    if (update.CallbackQuery is { Data: ReportButtons.Rank, Message: { } callbackMessage } callback)
     {
         // Answer first: Telegram only accepts the answer for a short time.
         await client.AnswerCallbackQuery(callback.Id, cancellationToken: ct);
         await users.RegisterAsync(callback.From.Id, ct);
+        waitingForAmount.TryRemove(callbackMessage.Chat.Id, out _);
         waitingForAddress[callbackMessage.Chat.Id] = true;
         await client.SendMessage(callbackMessage.Chat.Id, "📮 Send me your <b>Solana wallet address</b>.\n<blockquote>A base58 address, 32–44 characters.</blockquote>", parseMode: ParseMode.Html, cancellationToken: ct);
         return;
@@ -175,10 +254,37 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
 
     if (text.StartsWith("/start"))
     {
-        var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🏆 My Rank", "rank"));
-        await client.SendMessage(chatId, "👋 <b>Welcome!</b>\n\nCheck your <b>OnRe rank</b>, <b>points</b> and <b>active positions</b> on <b>Kamino</b>, <b>Loopscale</b> and <b>Exponent</b>.\n\n<blockquote>Tap <b>🏆 My Rank</b> below to start.</blockquote>\n\n💙 <i>Support my content:</i> follow <a href=\"https://x.com/BoombasticZZ\">@BoombasticZZ</a> on X (Twitter).",
+        waitingForAmount.TryRemove(chatId, out _);
+        var keyboard = ReportButtons.StartKeyboard();
+        await client.SendMessage(chatId, "👋 <b>Welcome!</b>\n\nCheck your <b>OnRe rank</b>, <b>points</b> and <b>active positions</b> on <b>Kamino</b>, <b>Loopscale</b> and <b>Exponent</b>.\n\n<blockquote>Tap <b>🏆 My Rank</b> to check a wallet, or <b>📊 Markets</b> for the current APY and prices, <b>💱 Swap rate</b> for the best ONyc ⇄ USDC rate, or <b>🧮 Calculator</b> to see what an amount turns into.</blockquote>\n\n💙 <i>Support my content:</i> follow <a href=\"https://x.com/BoombasticZZ\">@BoombasticZZ</a> on X (Twitter).",
             parseMode: ParseMode.Html, replyMarkup: keyboard,
             linkPreviewOptions: new LinkPreviewOptions { IsDisabled = true }, cancellationToken: ct);
+        return;
+    }
+
+    // The amount for the calculator
+    if (waitingForAmount.TryGetValue(chatId, out var calcBuy))
+    {
+        if (!SwapCalculator.TryParseAmount(text, out var calcAmount))
+        {
+            await client.SendMessage(chatId,
+                $"❌ <b>Invalid amount</b>\n<blockquote>Send a number between 0 and {SwapCalculator.MaxAmount:N0}, for example <code>100</code>.</blockquote>",
+                parseMode: ParseMode.Html, cancellationToken: ct);
+            return;
+        }
+
+        var calcNow = DateTimeOffset.UtcNow;
+        var calcWait = TryTake(calcTimes, chatId, MaxCalcPerWindow, calcNow, out var calcUses);
+        if (calcWait != null)
+        {
+            await client.SendMessage(chatId,
+                $"⏳ <b>Rate limit reached</b>\n<blockquote>3 calculations every 5 minutes. Try again in <b>{Math.Ceiling(calcWait.Value.TotalSeconds)}s</b>.</blockquote>",
+                parseMode: ParseMode.Html, cancellationToken: ct);
+            return;
+        }
+
+        waitingForAmount.TryRemove(chatId, out _);
+        _ = Task.Run(() => SendCalculatorAsync(client, chatId, calcBuy, calcAmount, calcNow, calcUses, ct), ct);
         return;
     }
 
@@ -250,6 +356,56 @@ Task SendHistoryAsync(ITelegramBotClient client, long chatId, string wallet, Dat
     RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching history…</i>",
         async () => MessageFormatter.FormatHistory(await portfolio.GetHistoryAsync(wallet, ct)),
         retryKeyboard: ReportButtons.HistoryKeyboard(wallet), finalKeyboard: null, ct);
+
+// Current APY, prices and maturity of the OnRe markets (shared data, no wallet).
+Task SendMarketsAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching markets…</i>",
+        async () =>
+        {
+            var overview = await portfolio.GetOverviewAsync(ct);
+            return MessageFormatter.FormatMarkets(overview.Overview, overview.Failed, DateTimeOffset.UtcNow);
+        },
+        retryKeyboard: ReportButtons.MarketsKeyboard(), finalKeyboard: null, ct);
+
+// Calculator: what the typed amount turns into on each DEX (Jupiter) and at Titan.
+Task SendCalculatorAsync(ITelegramBotClient client, long chatId, bool buy, decimal amount, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Calculating…</i>",
+        async () =>
+        {
+            var jupiterTask = jupiter.GetQuotesAsync(buy, amount, ct);
+            var titanTask = titan.GetQuotesAsync(buy, amount, ct);
+            await Task.WhenAll(jupiterTask, titanTask);
+            var quotes = jupiterTask.Result.Concat(titanTask.Result).ToList();
+            if (buy && await OnReMintRateAsync(amount, ct) is { } mint)
+                quotes.Add(mint);
+            return MessageFormatter.FormatCalculator(buy, amount, quotes);
+        },
+        retryKeyboard: ReportButtons.CalcChoiceKeyboard(), finalKeyboard: null, ct);
+
+// Minting ONyc at OnRe's own price (NAV, from the Exponent overview); null when the NAV is not available.
+async Task<SwapRate?> OnReMintRateAsync(decimal usdc, CancellationToken ct)
+{
+    var overview = await portfolio.GetOverviewAsync(ct);
+    var nav = OnReMint.Nav(overview.Overview);
+    return nav == null ? null : OnReMint.Rate(usdc, nav.Value, overview.Overview!.CachedAgeSeconds);
+}
+
+// ONyc <-> USDC swap rates from Jupiter (shared data, no wallet).
+Task SendSwapRatesAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching swap rates…</i>",
+        async () =>
+        {
+            // Jupiter and Titan are asked at the same time; Titan is skipped when no API key is set.
+            var jupiterTask = jupiter.GetRatesAsync(ct);
+            var titanTask = titan.GetRatesAsync(ct);
+            await Task.WhenAll(jupiterTask, titanTask);
+            var rates = jupiterTask.Result;
+            rates.Rates.AddRange(titanTask.Result);
+            if (await OnReMintRateAsync(JupiterClient.Amount, ct) is { } mint)
+                rates.Rates.Add(mint);
+            return MessageFormatter.FormatSwapRates(rates);
+        },
+        retryKeyboard: ReportButtons.SwapKeyboard(), finalKeyboard: null, ct);
 
 // At most MaxConcurrentReports jobs run at once (protects the small server's RAM). Extra requests wait a little, then get a "busy" reply.
 // The user sees a placeholder right away, which is replaced by the result. A job that never ran or failed does not count against the

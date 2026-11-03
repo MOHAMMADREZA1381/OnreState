@@ -1,7 +1,7 @@
 import http from "node:http";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getExtras, getOnReMarkets, getYtTrades, timed, type OnReMarket } from "./extras.js";
+import { getExtras, getMarketOverview, getOnReMarkets, getYtTrades, timed, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
 const connection = new Connection(process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com", "confirmed");
@@ -215,6 +215,16 @@ async function getHistory(wallet: string, requestedVaults: string[]) {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
+
+  if (url.pathname === "/overview") {
+    try {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(await getMarketOverview()));
+    } catch (e) {
+      console.error("Exponent market overview unavailable:", String(e));
+      res.writeHead(502, { "Content-Type": "application/json" }).end(JSON.stringify({ error: String(e) }));
+    }
+    return;
+  }
 
   const historyMatch = url.pathname.match(/^\/history\/([1-9A-HJ-NP-Za-km-z]{32,44})$/);
   if (historyMatch) {

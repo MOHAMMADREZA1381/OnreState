@@ -56,3 +56,61 @@ public class HistoryReport
     public bool KaminoFailed { get; set; }
     public ExponentHistory Exponent { get; set; } = new();
 }
+
+// Exponent: current state of the active OnRe markets (the same for every wallet).
+public class ExponentOverview
+{
+    public List<MarketInfo> Markets { get; set; } = new();
+    public List<TrancheInfo> Tranches { get; set; } = new();
+
+    // null: everything was fresh; a number: part of the data came from the Node service's cache.
+    public int? CachedAgeSeconds { get; set; }
+}
+
+public class MarketInfo
+{
+    public string Name { get; set; } = "";
+    public decimal? ImpliedApy { get; set; }
+    public decimal? UnderlyingApy { get; set; }
+    public decimal? YtPrice { get; set; }
+    public decimal? PtPrice { get; set; }
+
+    // USD value of one token of the market (the SY exchange rate)
+    public decimal? TokenPrice { get; set; }
+    public DateTimeOffset Maturity { get; set; }
+}
+
+// One swap quote ONyc <-> USDC (from Jupiter).
+public record SwapRate
+{
+    // true: USDC -> ONyc (buying ONyc); false: ONyc -> USDC (selling ONyc)
+    public bool Buy { get; init; }
+
+    // The DEX this price is for; null for an aggregator's own best route (which can mix several DEXes)
+    public string? Dex { get; init; }
+
+    // The aggregator that gave a best-route price ("Jupiter", "Titan"); null for a single-DEX price
+    public string? Source { get; init; }
+
+    public decimal AmountIn { get; init; }
+    public decimal AmountOut { get; init; }
+    public decimal UsdPerOnyc { get; init; }
+    public decimal PriceImpactPct { get; init; }
+    public List<string> Routes { get; init; } = new();
+
+    // null: fetched just now; a number: served from the short shared cache
+    public int? CachedSeconds { get; init; }
+}
+
+public class SwapRates
+{
+    public List<SwapRate> Rates { get; set; } = new();
+    public bool Failed { get; set; }
+}
+
+public class TrancheInfo
+{
+    public string Symbol { get; set; } = "";
+    public decimal? SeniorApy { get; set; }
+    public decimal? JuniorApy { get; set; }
+}

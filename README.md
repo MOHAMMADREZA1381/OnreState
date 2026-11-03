@@ -2,7 +2,7 @@
 
 A Telegram bot that shows the **OnRe rank and points** of a Solana wallet, plus its **active positions** on Kamino, Loopscale and Exponent (including Exponent PnL).
 
-Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address.
+Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address. **📊 Markets** shows the current APY and prices of the OnRe markets, and **💱 Swap rate** the best ONyc ⇄ USDC swap rate, both without a wallet.
 
 ## How it works (step by step)
 
@@ -13,7 +13,13 @@ Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address.
 4. Under the positions there is a **📈 History** button. It shows recent changes taken from the platforms' own APIs:
    - **Kamino**: net value of your obligation over the available daily snapshots (for example `$11.6048 → $11.6148`).
    - **Exponent**: your YT trades per market with totals (how many buys and sells, YT and USD bought and sold, the net YT and the **net spent**: USD paid for buys minus USD received from sells, because "bought" also counts purchases paid with the proceeds of earlier sales) and a table of the trades themselves (full date, YT amount with a `+` for bought and `-` for sold, price in USD per YT and the value of the trade in USD; up to 30 per market, newest first). The API reports amounts in SY, which are USD-denominated (1 SY is worth $1; checked against the token movements of real transactions on-chain), so no exchange rate is applied.
-   - **OnRe (rank and points) and Loopscale** do not offer history through their APIs, so nothing is shown for them and the message says so.
+   - **OnRe (rank and points) and Loopscale** do not offer history through their APIs, so nothing is shown for them.
+
+**📊 Markets** (from `/start`, no wallet needed) shows, for each active OnRe market on Exponent: token price, implied APY, underlying APY, YT and PT price and the days to maturity, plus the senior/junior APY of the Protected tranche. It is the same for every user, so the Node service caches it for 5 minutes and the message says how old the data is when it is cached.
+
+**💱 Swap rate** (no wallet needed) shows what 1 ONyc costs to buy and what it sells for on each DEX, one line per DEX with the best price marked ✅, plus the best route of each aggregator (which can mix several DEXes). The DEX prices come from [Jupiter](https://jup.ag)'s public quote API (no key), which can be limited to one DEX per request. If `TITAN_API_KEY` is set, [Titan](https://titan.exchange)'s Developers Portal API is asked as well (its free plan allows 1 request per second, so its two requests are spaced out). Prices are based on a swap of 100 USDC or 100 ONyc. Buying is also compared with **minting at OnRe** itself (the Deposit box of the OnRe app): USDC becomes ONyc at OnRe's own price (the NAV, taken from the exchange rate of the ONyc market on Exponent, which matches the "Price NAV" in the OnRe app) with no price impact and no mint fee, only the Solana network fee. Redeeming ONyc with OnRe is not an instant swap (it runs when liquidity is available), so it is not listed and the message says why. A DEX with no direct ONyc/USDC pool is left out. Only quotes are requested, nothing is executed. Quotes are cached for 20 seconds and shared by all users (the message says so when they are cached).
+
+**🧮 Calculator** answers "what does my amount turn into?". You pick a direction (USDC → ONyc or ONyc → USDC), type an amount (for example `100`, `$100` or `1,000.50`; at most 1,000,000 and 6 decimals) and get the result on each DEX and from each aggregator, best first, plus a summary of the best one: what you pay, what you get, the price per ONyc, the price impact (Jupiter only) and the minimum you receive if the price moves 0.5% against you. The quoted amounts already include the DEX pool fees and the price impact of your trade (that is how Jupiter and Titan quotes work); the Solana network fee (a tiny amount of SOL) is not included, and the message says so. Quotes only, nothing is executed. Each user may run 3 calculations every 5 minutes, because every amount needs its own quotes.
 
 The wallet address travels inside the buttons themselves (Telegram callback data), so the bot does not need to remember anything between the steps. Nothing is stored for the history either: it is read from the platforms each time.
 
@@ -81,6 +87,7 @@ None of these are stored in the repository.
 | Name | Description |
 |---|---|
 | `BOT_TOKEN` | Bot token from BotFather (required) |
+| `TITAN_API_KEY` | Free API key from the [Titan developer platform](https://developer.titan.exchange) (optional). Adds Titan to the swap prices; without it only Jupiter is shown. Never put it in a file in the repository |
 | `ADMIN_USER_ID` | Numeric Telegram id of the admin. Only this user gets a reply to `/stats` (optional; if unset, `/stats` is disabled) |
 | `SOLANA_RPC_URL` | Solana RPC used by the Exponent service (optional; a private RPC such as Helius or QuickNode is faster and avoids rate limits) |
 | `EXPONENT_SERVICE_PORT` | Port of the Exponent service (optional, default `3001`) |
@@ -113,7 +120,7 @@ For local runs you can keep these in a file named `run-local.ps1`; that name is 
 
 | Command | Who | Description |
 |---|---|---|
-| `/start` | everyone | Welcome message with the **My Rank** button |
+| `/start` | everyone | Welcome message with the **My Rank** and **Markets** buttons |
 | `/stats` | admin only | Total number of unique users (no reply for anyone else) |
 
 ## Deployment

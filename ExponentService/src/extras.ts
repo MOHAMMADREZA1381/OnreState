@@ -236,3 +236,50 @@ export async function getYtTrades(wallet: string, onre: OnReMarket[], extraVault
   });
   return { trades, total: mine.length };
 }
+
+// ---------- Market overview (no wallet): APY, prices and maturity of the active OnRe markets ----------
+
+type ApiOverviewMarket = ApiMarket & {
+  underlyingApy: number | null;
+  ytPriceInAsset: number | null;
+  ptPriceInAsset: number | null;
+  syExchangeRate: number | null;
+};
+
+export type MarketOverview = {
+  markets: { name: string; impliedApy: number | null; underlyingApy: number | null; ytPrice: number | null; ptPrice: number | null; tokenPrice: number | null; maturity: string }[];
+  tranches: { symbol: string; seniorApy: number | null; juniorApy: number | null }[];
+  cachedAgeSeconds: number | null;
+};
+
+// Both lists are shared by every user, so this is a couple of cached requests no matter how many users ask.
+// The tranche part is optional: if it fails, the market part is still returned.
+export async function getMarketOverview(): Promise<MarketOverview> {
+  const { value, ageMs } = await getShared<ApiOverviewMarket[]>("/markets");
+  const markets = value
+    .filter((m) => m.platformName === "OnRe" && m.marketStatus === "active")
+    .map((m) => ({
+      name: `${m.tokenName} ${formatMaturity(m.maturityDateUnixTs)}`,
+      impliedApy: m.impliedApy,
+      underlyingApy: m.underlyingApy ?? null,
+      ytPrice: m.ytPriceInAsset ?? null,
+      ptPrice: m.ptPriceInAsset ?? null,
+      tokenPrice: m.syExchangeRate ?? null,
+      maturity: new Date(m.maturityDateUnixTs * 1000).toISOString(),
+    }));
+
+  let tranches: MarketOverview["tranches"] = [];
+  let trancheAgeMs: number | null = null;
+  try {
+    const t = await getShared<TrancheMarket[]>("/tranching-markets");
+    tranches = t.value
+      .filter((x) => x.platformName === "OnRe")
+      .map((x) => ({ symbol: x.baseTokenSymbol, seniorApy: x.seniorApy, juniorApy: x.juniorApy }));
+    trancheAgeMs = t.ageMs;
+  } catch (e) {
+    console.error("Exponent tranche markets unavailable:", String(e));
+  }
+
+  const oldest = Math.max(ageMs ?? 0, trancheAgeMs ?? 0);
+  return { markets, tranches, cachedAgeSeconds: oldest > 0 ? Math.floor(oldest / 1000) : null };
+}

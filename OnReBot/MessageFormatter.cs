@@ -1,3 +1,4 @@
+using OnReBot.Clients;
 using System.Globalization;
 using System.Text;
 using OnReBot.Models;
@@ -66,6 +67,189 @@ public static class MessageFormatter
         const string note = "\n\n<i>…message shortened to fit Telegram's size limit.</i>";
         var cut = html.LastIndexOf("\n\n", TelegramLimit - note.Length, StringComparison.Ordinal);
         return (cut > 0 ? html[..cut] : html[..(TelegramLimit - note.Length)]) + note;
+    }
+
+    // Market overview: APY, prices and maturity of the active OnRe markets. The same for every user, so it needs no wallet.
+    public static string FormatMarkets(ExponentOverview? overview, bool failed, DateTimeOffset now)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("📊 <b>OnRe Markets</b>");
+        sb.AppendLine(Divider);
+
+        if (failed || overview == null)
+        {
+            sb.AppendLine($"\n🌾 <b>Exponent</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+
+        foreach (var m in overview.Markets)
+        {
+            var days = (int)Math.Ceiling((m.Maturity - now).TotalDays);
+            var rows = new List<(string Label, string Value)>
+            {
+                ("Token price", m.TokenPrice == null ? "–" : $"${m.TokenPrice.Value.ToString("0.0000", CultureInfo.InvariantCulture)}"),
+                ("Implied APY", Percent(m.ImpliedApy)),
+                ("Underlying", Percent(m.UnderlyingApy)),
+                ("YT price", m.YtPrice == null ? "–" : $"${m.YtPrice.Value.ToString("0.0000", CultureInfo.InvariantCulture)}"),
+                ("PT price", m.PtPrice == null ? "–" : $"${m.PtPrice.Value.ToString("0.0000", CultureInfo.InvariantCulture)}"),
+                ("Matures", $"{Day(m.Maturity)} ({Math.Max(days, 0)} days)")
+            };
+            sb.AppendLine($"\n🌾 <b>Exponent</b> · <i>{Esc(m.Name)}</i>");
+            sb.AppendLine(Pre(AlignRows(rows)));
+        }
+
+        foreach (var t in overview.Tranches)
+        {
+            var rows = new List<(string Label, string Value)>
+            {
+                ("Senior APY", Percent(t.SeniorApy)),
+                ("Junior APY", Percent(t.JuniorApy))
+            };
+            sb.AppendLine($"\n🛡 <b>Exponent Protected</b> · <i>{Esc(t.Symbol)}</i>");
+            sb.AppendLine(Pre(AlignRows(rows)));
+        }
+
+        if (overview.Markets.Count == 0 && overview.Tranches.Count == 0)
+            sb.AppendLine("\n<i>No active OnRe markets found.</i>");
+
+        sb.AppendLine("\n<blockquote><b>Implied APY</b>: yield the market is pricing in\n<b>Underlying</b>: current yield of the token itself\n<b>Token price</b>: USD value of one token</blockquote>");
+        if (overview.CachedAgeSeconds != null)
+            sb.AppendLine($"🕒 <i>cached data · {Age(overview.CachedAgeSeconds.Value)} old</i>");
+        return sb.ToString().TrimEnd();
+    }
+
+    // 0.1272 -> "12.72%"
+    private static string Percent(decimal? fraction) =>
+        fraction == null ? "–" : $"{(fraction.Value * 100).ToString("N2", CultureInfo.InvariantCulture)}%";
+
+    // ONyc price on each DEX and from each aggregator (Jupiter, Titan), for a swap of 100. Quotes only, nothing is executed.
+    public static string FormatSwapRates(SwapRates rates)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("💱 <b>ONyc price on DEXes</b>");
+        sb.AppendLine(Divider);
+
+        if (rates.Failed || rates.Rates.Count == 0)
+        {
+            sb.AppendLine($"\n<b>Swap prices</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+
+        var buys = rates.Rates.Where(r => r.Buy).ToList();
+        var sells = rates.Rates.Where(r => !r.Buy).ToList();
+        if (buys.Count > 0)
+        {
+            sb.AppendLine("\n🛒 <b>Buying 1 ONyc costs</b>");
+            AppendRateRows(sb, buys, r => -r.UsdPerOnyc, r => $"${Price(r.UsdPerOnyc)}");
+        }
+        if (sells.Count > 0)
+        {
+            sb.AppendLine("\n💵 <b>Selling 1 ONyc gives</b>");
+            AppendRateRows(sb, sells, r => r.UsdPerOnyc, r => $"${Price(r.UsdPerOnyc)}");
+        }
+
+        var sources = rates.Rates.Any(r => r.Source == "Titan") ? "Jupiter + Titan" : "Jupiter";
+        sb.AppendLine($"\n<blockquote>{Notes(rates.Rates.Any(r => r.Dex == OnReMint.Label), sells: true)}\nBased on a swap of {Dec(JupiterClient.Amount)} USDC or ONyc · {sources} · quotes only, nothing is executed.</blockquote>");
+
+        var cached = rates.Rates.Where(r => r.CachedSeconds != null).Select(r => r.CachedSeconds!.Value).DefaultIfEmpty(-1).Max();
+        if (cached >= 0)
+            sb.AppendLine($"🕒 <i>cached data · {Age(cached)} old</i>");
+        return sb.ToString().TrimEnd();
+    }
+
+    // The rows of a price list: the DEXes first (name in bold), then the aggregators with the DEXes of their best route. Every row that
+    // has the best price gets a ✅. `better` says which rate is better (higher is better), `value` is the text shown for a rate.
+    private static void AppendRateRows(StringBuilder sb, List<SwapRate> rates, Func<SwapRate, decimal> better, Func<SwapRate, string> value)
+    {
+        var bestText = value(rates.OrderByDescending(better).First());
+        var dexes = rates.Where(r => r.Dex != null).OrderByDescending(better).ToList();
+        var aggregators = rates.Where(r => r.Dex == null).OrderByDescending(better).ToList();
+        string Mark(SwapRate r) => value(r) == bestText ? "✅" : "▫️";
+
+        foreach (var r in dexes)
+            sb.AppendLine($"{Mark(r)} <b>{Esc(Platform(r.Dex!))}</b>: {value(r)}{(r.Dex == OnReMint.Label ? " <i>(NAV)</i>" : "")}");
+
+        if (aggregators.Count > 0 && dexes.Count > 0)
+            sb.AppendLine("🔀 <i>Best routes (aggregators)</i>");
+        foreach (var r in aggregators)
+            sb.AppendLine($"{Mark(r)} <b>{Esc(r.Source ?? "Best route")}</b>: {value(r)} <i>· via {Esc(RouteText(r.Routes))}</i>");
+    }
+
+    // "AlphaQ, SweetSpot +2" instead of a long list
+    private static string RouteText(List<string> routes)
+    {
+        var names = routes.Select(Platform).Distinct().ToList();
+        return names.Count <= 2 ? string.Join(", ", names) : $"{string.Join(", ", names.Take(2))} +{names.Count - 2}";
+    }
+
+    // Jupiter and Titan name the kind of pool ("Whirlpool", "Raydium CLMM"), not the platform. The platform is shown instead where it is
+    // known for sure; any other label is shown as it comes.
+    private static string Platform(string label) => label switch
+    {
+        "Whirlpool" or "Orca V2" => "Orca",
+        "Raydium CLMM" or "Raydium CP" or "Raydium" => "Raydium",
+        "Meteora DLMM" or "Meteora DAMM V2" or "Meteora DBC" => "Meteora",
+        _ => label
+    };
+
+    // The explanations under the swap prices. OnRe mint is only mentioned when it is listed; redemption is not an instant swap, so it is never listed.
+    private static string Notes(bool mintListed, bool sells)
+    {
+        var lines = new List<string>();
+        if (mintListed)
+            lines.Add("OnRe mint: ONyc at OnRe's own price (NAV), no mint fee; limits are set by the OnRe app.");
+        if (sells)
+            lines.Add("Selling to OnRe is not an instant swap (it runs when liquidity is available), so it is not listed.");
+        return string.Join("\n", lines);
+    }
+
+    private static string Price(decimal usd) => usd.ToString("0.0000", CultureInfo.InvariantCulture);
+
+    // Calculator: what a given amount turns into on each DEX and aggregator. The quoted amounts already include the pool fees and the
+    // price impact of the trade itself; the Solana network fee (a tiny amount of SOL) is not part of them.
+    public static string FormatCalculator(bool buy, decimal amount, List<SwapRate> rates)
+    {
+        const decimal slippage = 0.005m;   // the 0.5% (50 bps) used for the quotes
+        var payToken = buy ? "USDC" : "ONyc";
+        var getToken = buy ? "ONyc" : "USDC";
+        string Out(decimal value) => buy ? Dec4(value) : Dec(value);
+        string In(decimal value) => buy ? Dec(value) : Dec4(value);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"🧮 <b>Calculator</b> · {In(amount)} {payToken} → {getToken}");
+        sb.AppendLine(Divider);
+
+        if (rates.Count == 0)
+        {
+            sb.AppendLine($"\n<b>Swap prices</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+
+        sb.AppendLine("\nYou would get:");
+        AppendRateRows(sb, rates, r => r.AmountOut, r => $"{Out(r.AmountOut)} {getToken}");
+
+        var best = rates.OrderByDescending(r => r.AmountOut).First();
+        var rows = new List<(string Label, string Value)>
+        {
+            ("You pay", $"{In(amount)} {payToken}"),
+            ("You get", $"{Out(best.AmountOut)} {getToken}"),
+            ("Price", $"${Price(best.UsdPerOnyc)} per ONyc"),
+            ("Minimum", $"{Out(best.AmountOut * (1 - slippage))} {getToken}")
+        };
+        // Only Jupiter reports a price impact
+        if (best.Source != "Titan")
+            rows.Insert(3, ("Impact", $"{best.PriceImpactPct.ToString("0.00", CultureInfo.InvariantCulture)}%"));
+        sb.AppendLine($"\n🏆 <b>Best: {Esc(best.Dex ?? best.Source ?? "Best route")}</b>");
+        sb.AppendLine(Pre(AlignRows(rows)));
+
+        var extra = Notes(buy && rates.Any(r => r.Dex == OnReMint.Label), sells: !buy);
+        sb.AppendLine("\n<blockquote><b>Included</b>: DEX pool fees and the price impact of your trade.\n<b>Minimum</b>: the least you get if the price moves against you by 0.5%.\n<b>Not included</b>: the Solana network fee (a tiny amount of SOL)."
+            + (extra == "" ? "" : "\n" + extra) + "\nQuotes only, nothing is executed.</blockquote>");
+
+        var cached = rates.Where(r => r.CachedSeconds != null).Select(r => r.CachedSeconds!.Value).DefaultIfEmpty(-1).Max();
+        if (cached >= 0)
+            sb.AppendLine($"🕒 <i>cached data · {Age(cached)} old</i>");
+        return sb.ToString().TrimEnd();
     }
 
     // Step 3: recent changes taken from the platforms' own APIs (the bot stores nothing).

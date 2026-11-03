@@ -35,6 +35,13 @@ public class PortfolioService(
         };
     }
 
+    // Market overview (shared data, no wallet).
+    public async Task<(ExponentOverview? Overview, bool Failed)> GetOverviewAsync(CancellationToken ct)
+    {
+        var result = await Safe(() => exponent.GetOverviewAsync(ct));
+        return (result.Value, result.Failed);
+    }
+
     public async Task<PortfolioReport> GetReportAsync(string wallet, CancellationToken ct)
     {
         var onReTask = Safe(() => onRe.GetPointsAsync(wallet, ct));

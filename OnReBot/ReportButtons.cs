@@ -11,6 +11,12 @@ public static class ReportButtons
     public const string FullPrefix = "full:";
     public const string HistoryPrefix = "hist:";
     public const string Decline = "no";
+    public const string Rank = "rank";
+    public const string Markets = "markets";
+    public const string Swap = "swap";
+    public const string Calc = "calc";
+    public const string CalcBuy = "calc:buy";
+    public const string CalcSell = "calc:sell";
 
     public static string FullData(string wallet) => FullPrefix + wallet;
 
@@ -33,6 +39,35 @@ public static class ReportButtons
         wallet = candidate;
         return true;
     }
+
+    // The two entry points under the welcome message
+    public static InlineKeyboardMarkup StartKeyboard() =>
+        new(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🏆 My Rank", Rank) },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("📊 Markets", Markets),
+                InlineKeyboardButton.WithCallbackData("💱 Swap rate", Swap),
+            },
+            new[] { InlineKeyboardButton.WithCallbackData("🧮 Calculator", Calc) },
+        });
+
+    // Which way the calculator should convert
+    public static InlineKeyboardMarkup CalcChoiceKeyboard() =>
+        new(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("💵 USDC → ONyc", CalcBuy),
+            InlineKeyboardButton.WithCallbackData("🪙 ONyc → USDC", CalcSell),
+        });
+
+    // Retry button for the market overview
+    public static InlineKeyboardMarkup MarketsKeyboard() =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("📊 Markets", Markets) });
+
+    // Retry button for the swap rates
+    public static InlineKeyboardMarkup SwapKeyboard() =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("💱 Swap rate", Swap) });
 
     // Step 2 question under the quick summary
     public static InlineKeyboardMarkup Keyboard(string wallet) =>

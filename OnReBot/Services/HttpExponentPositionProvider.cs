@@ -28,6 +28,13 @@ public class HttpExponentPositionProvider(HttpClient http, BotConfig config) : I
         return ParseHistory(await response.Content.ReadAsStringAsync(ct), config.ExponentMarkets);
     }
 
+    public async Task<ExponentOverview> GetOverviewAsync(CancellationToken ct)
+    {
+        using var response = await http.GetAsync($"{config.ExponentServiceUrl.TrimEnd('/')}/overview", ct);
+        response.EnsureSuccessStatusCode();
+        return JsonSerializer.Deserialize<ExponentOverview>(await response.Content.ReadAsStringAsync(ct), Json.Options) ?? new();
+    }
+
     public static ExponentHistory ParseHistory(string json, List<ExponentMarketConfig> markets)
     {
         var result = JsonSerializer.Deserialize<ExponentServiceHistory>(json, Json.Options) ?? new();

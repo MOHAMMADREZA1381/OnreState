@@ -7,13 +7,15 @@ Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address. **📊 M
 ## How it works (step by step)
 
 1. `/start`, then **🏆 My Rank**, then you send your wallet address.
-2. The bot answers right away with your **rank and points** (one fast request) and asks whether you want the positions too: **✅ Full report** or **❌ No thanks**. The question notes that all requests are sent from a single IP address, so some data may be temporarily unavailable.
+2. The bot answers right away with your **rank and points** (one fast request) and asks whether you want the positions too: **✅ Full report** or **❌ No thanks**. The question notes that all requests are sent from a single IP address, so some data may be temporarily unavailable. A third button, **🖼 Share card**, sends an image of your rank, total points and points per platform (see below).
 3. If you tap **Full report**, a second message follows with your **active positions** (Kamino, Loopscale, Exponent). Tapping the button also removes it, so one tap starts exactly one report.
 
 4. Under the positions there is a **📈 History** button. It shows recent changes taken from the platforms' own APIs:
    - **Kamino**: net value of your obligation over the available daily snapshots (for example `$11.6048 → $11.6148`).
    - **Exponent**: your YT trades per market with totals (how many buys and sells, YT and USD bought and sold, the net YT and the **net spent**: USD paid for buys minus USD received from sells, because "bought" also counts purchases paid with the proceeds of earlier sales) and a table of the trades themselves (full date, YT amount with a `+` for bought and `-` for sold, price in USD per YT and the value of the trade in USD; up to 30 per market, newest first). The API reports amounts in SY, which are USD-denominated (1 SY is worth $1; checked against the token movements of real transactions on-chain), so no exchange rate is applied.
    - **OnRe (rank and points) and Loopscale** do not offer history through their APIs, so nothing is shown for them.
+
+**🖼 Share card** (under the quick summary) sends a PNG you can post: rank, total points and the points per platform (the biggest four plus "Other"), with the address shortened to its first 6 and last 4 characters. It uses only what OnRe already shows in the summary, and nothing is stored. The Node service draws it from an SVG template with [resvg](https://github.com/yisibl/resvg-js) (no browser needed) and the DejaVu Sans font that ships with the `dejavu-fonts-ttf` package, so it does not depend on fonts installed on the server. Each image is rendered in its own short-lived process, one at a time, so the memory goes back to the system afterwards (the renderer keeps several MB allocated per image, which would add up in the long-running service). Each user may create 2 cards every 5 minutes.
 
 **📊 Markets** (from `/start`, no wallet needed) shows, for each active OnRe market on Exponent: token price, implied APY, underlying APY, YT and PT price and the days to maturity, plus the senior/junior APY of the Protected tranche. It is the same for every user, so the Node service caches it for 5 minutes and the message says how old the data is when it is cached.
 

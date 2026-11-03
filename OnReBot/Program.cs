@@ -23,6 +23,8 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 http.DefaultRequestHeaders.UserAgent.ParseAdd("OnReBot/1.0 (telegram rank bot)");
 
 var jupiter = new JupiterClient(http);
+// The share card is drawn by the Node service (only when it is configured).
+var cardClient = config.ExponentServiceUrl == "" ? null : new CardClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) }, config.ExponentServiceUrl);
 var titan = new TitanClient(http, config.TitanApiKey);
 
 var portfolio = new PortfolioService(
@@ -67,6 +69,9 @@ var swapTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // The calculator asks Jupiter for about five quotes per amount and the amount differs per user (so nothing can be shared), hence a tighter limit.
 const int MaxCalcPerWindow = 3;
 var calcTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// A card needs a fresh OnRe request and an image render, so it has a limit like the full report.
+const int MaxCardsPerWindow = 2;
+var cardTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // Chats that are about to type an amount for the calculator (true = buy ONyc with USDC, false = sell ONyc).
 var waitingForAmount = new ConcurrentDictionary<long, bool>();
 const int MaxConcurrentReports = 5;
@@ -128,6 +133,26 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
 
         // The polling loop awaits this handler, so a slow report must not run here: it would block every other user.
         _ = Task.Run(() => SendReportAsync(client, fullChatId, fullWallet, now, times, ct), ct);
+        return;
+    }
+
+    // The user tapped "Share card" under the quick summary (the buttons stay, so the full report is still one tap away).
+    if (update.CallbackQuery is { Message: { } cardMessage } cardCallback && ReportButtons.TryParseCard(cardCallback.Data, out var cardWallet))
+    {
+        var cardChatId = cardMessage.Chat.Id;
+        var cardNow = DateTimeOffset.UtcNow;
+        var cardWait = TryTake(cardTimes, cardChatId, MaxCardsPerWindow, cardNow, out var cardUses);
+        if (cardWait != null)
+        {
+            await client.AnswerCallbackQuery(cardCallback.Id,
+                $"Rate limit reached: 2 cards every 5 minutes. Try again in {Math.Ceiling(cardWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(cardCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(cardCallback.From.Id, ct);
+        _ = Task.Run(() => SendCardAsync(client, cardChatId, cardWallet, cardNow, cardUses, ct), ct);
         return;
     }
 
@@ -366,6 +391,65 @@ Task SendMarketsAsync(ITelegramBotClient client, long chatId, DateTimeOffset req
             return MessageFormatter.FormatMarkets(overview.Overview, overview.Failed, DateTimeOffset.UtcNow);
         },
         retryKeyboard: ReportButtons.MarketsKeyboard(), finalKeyboard: null, ct);
+
+// Share card: an image with the rank, points and points per platform. Draws only what OnRe already shows in the summary.
+async Task SendCardAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct)
+{
+    var gotSlot = false;
+    int? placeholderId = null;
+    try
+    {
+        if (cardClient == null)
+        {
+            lock (times) times.Remove(requestedAt);
+            await client.SendMessage(chatId, "🖼 <b>Cards are not available right now.</b>", parseMode: ParseMode.Html, cancellationToken: ct);
+            return;
+        }
+
+        gotSlot = await reportSlots.WaitAsync(BusyAfter, ct);
+        if (!gotSlot)
+        {
+            lock (times) times.Remove(requestedAt);
+            await client.SendMessage(chatId, "🚦 <b>The bot is busy right now</b>\n<i>Please tap the button again in a few seconds.</i>", parseMode: ParseMode.Html, cancellationToken: ct);
+            return;
+        }
+
+        placeholderId = await TrySendAsync(client, chatId, "⏳ <i>Creating your card…</i>", ct);
+        var summary = await portfolio.GetSummaryAsync(wallet, ct);
+        if (summary.Failed || summary.OnRe == null || summary.OnRe.TotalPoints <= 0)
+        {
+            lock (times) times.Remove(requestedAt);
+            await ShowAsync(client, chatId, placeholderId,
+                summary.Failed ? "⚠️ <b>Could not read your points right now</b>\n<i>Please try again in a moment.</i>"
+                    : "🖼 <b>Nothing to share yet</b>\n<i>This wallet has no OnRe points.</i>", null, ct);
+            return;
+        }
+
+        var png = await cardClient.RenderAsync(wallet, summary.OnRe, ct);
+        using var stream = new MemoryStream(png);
+        await client.SendPhoto(chatId, InputFile.FromStream(stream, "onre-rank-card.png"), caption: "🏆 OnRe rank card · t.me/onre_rank_bot", cancellationToken: ct);
+        if (placeholderId != null)
+            await client.DeleteMessage(chatId, placeholderId.Value, ct);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        Console.Error.WriteLine($"Card failed: {ex.GetType().Name}: {ex.Message}");
+        lock (times) times.Remove(requestedAt);
+        try
+        {
+            await ShowAsync(client, chatId, placeholderId, "⚠️ <b>Could not create the card</b>\n<i>Please try again in a moment.</i>", null, ct);
+        }
+        catch (Exception sendEx)
+        {
+            Console.Error.WriteLine($"Could not send error message: {sendEx.Message}");
+        }
+    }
+    finally
+    {
+        if (gotSlot)
+            reportSlots.Release();
+    }
+}
 
 // Calculator: what the typed amount turns into on each DEX (Jupiter) and at Titan.
 Task SendCalculatorAsync(ITelegramBotClient client, long chatId, bool buy, decimal amount, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>

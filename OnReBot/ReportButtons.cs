@@ -10,6 +10,7 @@ public static class ReportButtons
 {
     public const string FullPrefix = "full:";
     public const string HistoryPrefix = "hist:";
+    public const string CardPrefix = "card:";
     public const string Decline = "no";
     public const string Rank = "rank";
     public const string Markets = "markets";
@@ -21,6 +22,10 @@ public static class ReportButtons
     public static string FullData(string wallet) => FullPrefix + wallet;
 
     public static string HistoryData(string wallet) => HistoryPrefix + wallet;
+
+    public static string CardData(string wallet) => CardPrefix + wallet;
+
+    public static bool TryParseCard(string? data, out string wallet) => TryParse(CardPrefix, data, out wallet);
 
     public static bool TryParseFull(string? data, out string wallet) => TryParse(FullPrefix, data, out wallet);
 
@@ -73,8 +78,12 @@ public static class ReportButtons
     public static InlineKeyboardMarkup Keyboard(string wallet) =>
         new(new[]
         {
-            InlineKeyboardButton.WithCallbackData("✅ Full report", FullData(wallet)),
-            InlineKeyboardButton.WithCallbackData("❌ No thanks", Decline),
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("✅ Full report", FullData(wallet)),
+                InlineKeyboardButton.WithCallbackData("❌ No thanks", Decline),
+            },
+            new[] { InlineKeyboardButton.WithCallbackData("🖼 Share card", CardData(wallet)) },
         });
 
     // Step 3 button under the positions

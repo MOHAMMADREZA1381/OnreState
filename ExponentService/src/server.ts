@@ -1,6 +1,9 @@
 import http from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
+import { sanitizeCard } from "./card.js";
 import { getExtras, getMarketOverview, getOnReMarkets, getYtTrades, timed, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
@@ -213,8 +216,63 @@ async function getHistory(wallet: string, requestedVaults: string[]) {
   }
 }
 
+// Share card: rendered by a separate short-lived process (see card-worker.ts), one at a time so the small server's RAM stays safe.
+const CARD_WORKER = fileURLToPath(new URL("./card-worker.js", import.meta.url));
+let cardQueue: Promise<unknown> = Promise.resolve();
+
+function renderCardInChild(json: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CARD_WORKER], { stdio: ["pipe", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("card timeout"));
+    }, 10_000);
+    child.stdout.on("data", (d: Buffer) => out.push(d));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(Buffer.concat(out));
+      else reject(new Error(`card worker exited with ${code}`));
+    });
+    child.stdin.end(json);
+  });
+}
+
+async function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > maxBytes) throw new Error("body too large");
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
+
+  if (req.method === "POST" && url.pathname === "/card") {
+    try {
+      const data = sanitizeCard(JSON.parse(await readBody(req, 4096)));
+      if (data === null) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid card data" }));
+        return;
+      }
+      const job = cardQueue.then(() => renderCardInChild(JSON.stringify(data)));
+      cardQueue = job.catch(() => undefined);
+      const png = await job;
+      res.writeHead(200, { "Content-Type": "image/png" }).end(png);
+    } catch (e) {
+      console.error("Card failed:", String(e));
+      res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "card failed" }));
+    }
+    return;
+  }
 
   if (url.pathname === "/overview") {
     try {

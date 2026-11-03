@@ -10,7 +10,9 @@
     "dev": "tsx src/server.ts"
   },
   "dependencies": {
-    "@exponent-labs/exponent-sdk": "0.9.32"
+    "@exponent-labs/exponent-sdk": "0.9.32",
+    "@resvg/resvg-js": "^2.6.2",
+    "dejavu-fonts-ttf": "^2.37.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

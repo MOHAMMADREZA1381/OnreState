@@ -27,8 +27,9 @@ var jupiter = new JupiterClient(http);
 var cardClient = config.ExponentServiceUrl == "" ? null : new CardClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) }, config.ExponentServiceUrl);
 var titan = new TitanClient(http, config.TitanApiKey);
 
+var onReClient = new OnReClient(http);
 var portfolio = new PortfolioService(
-    new OnReClient(http),
+    onReClient,
     new KaminoClient(http, config),
     new LoopscaleClient(http, config),
     config.ExponentServiceUrl == ""
@@ -39,6 +40,15 @@ var portfolio = new PortfolioService(
 // Stored outside the project folder so rebuilds never touch it.
 var usersFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OnReBot", "users.txt");
 var users = new UserTracker(usersFile);
+
+// The Time Machine: an hourly snapshot of OnRe's public leaderboard (rank, address and points per wallet, nothing about the bot's own
+// users) gives the history that the OnRe API does not offer. Stored as small gzip files next to the users file.
+var snapshotDir = Path.Combine(Path.GetDirectoryName(usersFile)!, "snapshots");
+var snapshots = new SnapshotStore(snapshotDir);
+var snapshotHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+snapshotHttp.DefaultRequestHeaders.UserAgent.ParseAdd("OnReBot/1.0 (telegram rank bot)");
+var snapshotJob = new SnapshotJob(snapshotHttp, onReClient, snapshots);
+Console.WriteLine($"Snapshots: {snapshots.List().Count} in {snapshotDir}");
 Console.WriteLine($"Users file: {usersFile} ({users.Count} users)");
 
 // The library long-polls Telegram for 100 s, so its HttpClient timeout must be longer than that (default 100 s collides
@@ -66,6 +76,10 @@ var historyTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 const int MaxMarketsPerWindow = 5;
 var marketsTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 var swapTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+var momentumTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+// The leaderboard screens read a few cached pages from OnRe, so they get the same generous limit as the market screens.
+var boardTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
+var positionTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // The calculator asks Jupiter for about five quotes per amount and the amount differs per user (so nothing can be shared), hence a tighter limit.
 const int MaxCalcPerWindow = 3;
 var calcTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
@@ -80,6 +94,8 @@ var reportSlots = new SemaphoreSlim(MaxConcurrentReports, MaxConcurrentReports);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+_ = snapshotJob.RunAsync(cts.Token);
 
 bot.StartReceiving(HandleUpdate, HandleError, new ReceiverOptions { AllowedUpdates = [UpdateType.Message, UpdateType.CallbackQuery] }, cts.Token);
 
@@ -230,6 +246,106 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
         return;
     }
 
+    // Leaderboard: the top of the OnRe list, no wallet needed.
+    if (update.CallbackQuery is { Data: ReportButtons.Board, Message: { } boardMessage } boardCallback)
+    {
+        var boardChatId = boardMessage.Chat.Id;
+        var boardNow = DateTimeOffset.UtcNow;
+        var boardWait = TryTake(boardTimes, boardChatId, MaxMarketsPerWindow, boardNow, out var boardUses);
+        if (boardWait != null)
+        {
+            await client.AnswerCallbackQuery(boardCallback.Id,
+                $"Rate limit reached: 5 leaderboard requests every 5 minutes. Try again in {Math.Ceiling(boardWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(boardCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(boardCallback.From.Id, ct);
+        _ = Task.Run(() => SendBoardAsync(client, boardChatId, boardNow, boardUses, ct), ct);
+        return;
+    }
+
+    // How the top wallets earn their points (the button under the leaderboard).
+    if (update.CallbackQuery is { Data: ReportButtons.Mix, Message: { } mixMessage } mixCallback)
+    {
+        var mixChatId = mixMessage.Chat.Id;
+        var mixNow = DateTimeOffset.UtcNow;
+        var mixWait = TryTake(boardTimes, mixChatId, MaxMarketsPerWindow, mixNow, out var mixUses);
+        if (mixWait != null)
+        {
+            await client.AnswerCallbackQuery(mixCallback.Id,
+                $"Rate limit reached: 5 leaderboard requests every 5 minutes. Try again in {Math.Ceiling(mixWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(mixCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(mixCallback.From.Id, ct);
+        _ = Task.Run(() => SendMixAsync(client, mixChatId, mixNow, mixUses, ct), ct);
+        return;
+    }
+
+    // Time Machine: who moved the most (button under the leaderboard).
+    if (update.CallbackQuery is { Data: ReportButtons.Movers, Message: { } moversMessage } moversCallback)
+    {
+        var moversChatId = moversMessage.Chat.Id;
+        var moversNow = DateTimeOffset.UtcNow;
+        var moversWait = TryTake(boardTimes, moversChatId, MaxMarketsPerWindow, moversNow, out var moversUses);
+        if (moversWait != null)
+        {
+            await client.AnswerCallbackQuery(moversCallback.Id,
+                $"Rate limit reached: 5 leaderboard requests every 5 minutes. Try again in {Math.Ceiling(moversWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(moversCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(moversCallback.From.Id, ct);
+        _ = Task.Run(() => SendMoversAsync(client, moversChatId, moversNow, moversUses, ct), ct);
+        return;
+    }
+
+    // Time Machine: how fast one wallet gains points (button under the quick summary, the buttons stay).
+    if (update.CallbackQuery is { Message: { } momentumMessage } momentumCallback && ReportButtons.TryParseMomentum(momentumCallback.Data, out var momentumWallet))
+    {
+        var momentumChatId = momentumMessage.Chat.Id;
+        var momentumNow = DateTimeOffset.UtcNow;
+        var momentumWait = TryTake(momentumTimes, momentumChatId, MaxMarketsPerWindow, momentumNow, out var momentumUses);
+        if (momentumWait != null)
+        {
+            await client.AnswerCallbackQuery(momentumCallback.Id,
+                $"Rate limit reached: 5 momentum requests every 5 minutes. Try again in {Math.Ceiling(momentumWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(momentumCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(momentumCallback.From.Id, ct);
+        _ = Task.Run(() => SendMomentumAsync(client, momentumChatId, momentumWallet, momentumNow, momentumUses, ct), ct);
+        return;
+    }
+
+    // The user tapped "My position" under the quick summary (the buttons stay).
+    if (update.CallbackQuery is { Message: { } positionMessage } positionCallback && ReportButtons.TryParsePosition(positionCallback.Data, out var positionWallet))
+    {
+        var positionChatId = positionMessage.Chat.Id;
+        var positionNow = DateTimeOffset.UtcNow;
+        var positionWait = TryTake(positionTimes, positionChatId, MaxMarketsPerWindow, positionNow, out var positionUses);
+        if (positionWait != null)
+        {
+            await client.AnswerCallbackQuery(positionCallback.Id,
+                $"Rate limit reached: 5 position requests every 5 minutes. Try again in {Math.Ceiling(positionWait.Value.TotalSeconds)}s.",
+                showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        await client.AnswerCallbackQuery(positionCallback.Id, cancellationToken: ct);
+        await users.RegisterAsync(positionCallback.From.Id, ct);
+        _ = Task.Run(() => SendPositionAsync(client, positionChatId, positionWallet, positionNow, positionUses, ct), ct);
+        return;
+    }
+
     // Swap rates: no wallet needed.
     if (update.CallbackQuery is { Data: ReportButtons.Swap, Message: { } swapMessage } swapCallback)
     {
@@ -338,8 +454,11 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
     waitingForAddress.TryRemove(chatId, out _);
 
     // Step 1: rank and points right away, then ask whether the user wants the positions too.
-    var summary = await portfolio.GetSummaryAsync(wallet, ct);
-    await client.SendMessage(chatId, MessageFormatter.FitToTelegram(MessageFormatter.FormatSummary(summary.OnRe, summary.Failed)),
+    var summaryTask = portfolio.GetSummaryAsync(wallet, ct);
+    var totalTask = portfolio.GetTotalUsersAsync(ct);   // for "Top x%"; left out when it cannot be read
+    await Task.WhenAll(summaryTask, totalTask);
+    var summary = summaryTask.Result;
+    await client.SendMessage(chatId, MessageFormatter.FitToTelegram(MessageFormatter.FormatSummary(summary.OnRe, summary.Failed, totalTask.Result)),
         parseMode: ParseMode.Html, replyMarkup: ReportButtons.Keyboard(wallet), cancellationToken: ct);
 }
 
@@ -382,13 +501,57 @@ Task SendHistoryAsync(ITelegramBotClient client, long chatId, string wallet, Dat
         async () => MessageFormatter.FormatHistory(await portfolio.GetHistoryAsync(wallet, ct)),
         retryKeyboard: ReportButtons.HistoryKeyboard(wallet), finalKeyboard: null, ct);
 
+// The top 10 of the OnRe leaderboard (shared data, no wallet).
+Task SendBoardAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching the leaderboard…</i>",
+        async () =>
+        {
+            var top = await portfolio.GetTopAsync(10, ct);
+            return MessageFormatter.FormatLeaderboard(top.Page, top.Failed);
+        },
+        retryKeyboard: ReportButtons.BoardKeyboard(), finalKeyboard: ReportButtons.BoardFinalKeyboard(), ct);
+
+// Time Machine: who gained the most points and who climbed the most in the last day.
+Task SendMoversAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Comparing snapshots…</i>",
+        async () => MessageFormatter.FormatMovers(await Task.Run(() => TimeMachine.GetMovers(snapshots), ct)),
+        retryKeyboard: ReportButtons.MoversKeyboard(), finalKeyboard: null, ct);
+
+// Time Machine: how fast one wallet gains points and what that means for the next ranks.
+Task SendMomentumAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Checking your momentum…</i>",
+        async () => MessageFormatter.FormatMomentum(await Task.Run(() => TimeMachine.GetMomentum(snapshots, wallet), ct)),
+        retryKeyboard: ReportButtons.MomentumKeyboard(wallet), finalKeyboard: null, ct);
+
+// How the top 50 wallets earn their points, per platform.
+Task SendMixAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Adding up the top wallets…</i>",
+        async () =>
+        {
+            var top = await portfolio.GetTopAsync(OnReClient.PageSize, ct);
+            return MessageFormatter.FormatMix(top.Page, top.Failed);
+        },
+        retryKeyboard: ReportButtons.MixKeyboard(), finalKeyboard: null, ct);
+
+// Where one wallet stands on the leaderboard (its neighbours and the gaps to the next goals).
+Task SendPositionAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
+    RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Looking up your position…</i>",
+        async () =>
+        {
+            var result = await portfolio.GetPositionAsync(wallet, ct);
+            return MessageFormatter.FormatPosition(result.Position, wallet, result.Failed, result.NoPoints);
+        },
+        retryKeyboard: ReportButtons.PositionKeyboard(wallet), finalKeyboard: null, ct);
+
 // Current APY, prices and maturity of the OnRe markets (shared data, no wallet).
 Task SendMarketsAsync(ITelegramBotClient client, long chatId, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct) =>
     RunJobAsync(client, chatId, requestedAt, times, "⏳ <i>Fetching markets…</i>",
         async () =>
         {
-            var overview = await portfolio.GetOverviewAsync(ct);
-            return MessageFormatter.FormatMarkets(overview.Overview, overview.Failed, DateTimeOffset.UtcNow);
+            var overviewTask = portfolio.GetOverviewAsync(ct);
+            var statsTask = portfolio.GetOnReStatsAsync(ct);
+            await Task.WhenAll(overviewTask, statsTask);
+            return MessageFormatter.FormatMarkets(overviewTask.Result.Overview, overviewTask.Result.Failed, DateTimeOffset.UtcNow, statsTask.Result);
         },
         retryKeyboard: ReportButtons.MarketsKeyboard(), finalKeyboard: null, ct);
 
@@ -425,7 +588,7 @@ async Task SendCardAsync(ITelegramBotClient client, long chatId, string wallet, 
             return;
         }
 
-        var png = await cardClient.RenderAsync(wallet, summary.OnRe, ct);
+        var png = await cardClient.RenderAsync(wallet, summary.OnRe, await portfolio.GetTotalUsersAsync(ct), ct);
         using var stream = new MemoryStream(png);
         await client.SendPhoto(chatId, InputFile.FromStream(stream, "onre-rank-card.png"), caption: "🏆 OnRe rank card · t.me/onre_rank_bot", cancellationToken: ct);
         if (placeholderId != null)
@@ -466,9 +629,14 @@ Task SendCalculatorAsync(ITelegramBotClient client, long chatId, bool buy, decim
         },
         retryKeyboard: ReportButtons.CalcChoiceKeyboard(), finalKeyboard: null, ct);
 
-// Minting ONyc at OnRe's own price (NAV, from the Exponent overview); null when the NAV is not available.
+// Minting ONyc at OnRe's own price. The NAV is OnRe's official live number; if that cannot be read, the exchange rate of the ONyc market
+// on Exponent is used (they match). null when neither is available.
 async Task<SwapRate?> OnReMintRateAsync(decimal usdc, CancellationToken ct)
 {
+    var stats = await portfolio.GetOnReStatsAsync(ct);
+    if (stats.Nav is { } officialNav)
+        return OnReMint.Rate(usdc, officialNav, stats.CachedSeconds);
+
     var overview = await portfolio.GetOverviewAsync(ct);
     var nav = OnReMint.Nav(overview.Overview);
     return nav == null ? null : OnReMint.Rate(usdc, nav.Value, overview.Overview!.CachedAgeSeconds);

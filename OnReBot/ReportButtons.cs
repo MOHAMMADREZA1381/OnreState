@@ -16,6 +16,11 @@ public static class ReportButtons
     public const string Markets = "markets";
     public const string Swap = "swap";
     public const string Calc = "calc";
+    public const string Board = "board";
+    public const string Mix = "mix";
+    public const string Movers = "movers";
+    public const string MomentumPrefix = "mom:";
+    public const string PositionPrefix = "pos:";
     public const string CalcBuy = "calc:buy";
     public const string CalcSell = "calc:sell";
 
@@ -24,6 +29,14 @@ public static class ReportButtons
     public static string HistoryData(string wallet) => HistoryPrefix + wallet;
 
     public static string CardData(string wallet) => CardPrefix + wallet;
+
+    public static string MomentumData(string wallet) => MomentumPrefix + wallet;
+
+    public static bool TryParseMomentum(string? data, out string wallet) => TryParse(MomentumPrefix, data, out wallet);
+
+    public static string PositionData(string wallet) => PositionPrefix + wallet;
+
+    public static bool TryParsePosition(string? data, out string wallet) => TryParse(PositionPrefix, data, out wallet);
 
     public static bool TryParseCard(string? data, out string wallet) => TryParse(CardPrefix, data, out wallet);
 
@@ -49,7 +62,11 @@ public static class ReportButtons
     public static InlineKeyboardMarkup StartKeyboard() =>
         new(new[]
         {
-            new[] { InlineKeyboardButton.WithCallbackData("🏆 My Rank", Rank) },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🏆 My Rank", Rank),
+                InlineKeyboardButton.WithCallbackData("🏅 Leaderboard", Board),
+            },
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("📊 Markets", Markets),
@@ -65,6 +82,30 @@ public static class ReportButtons
             InlineKeyboardButton.WithCallbackData("💵 USDC → ONyc", CalcBuy),
             InlineKeyboardButton.WithCallbackData("🪙 ONyc → USDC", CalcSell),
         });
+
+    // Under the leaderboard: how the top wallets earn their points, and who moves the most
+    public static InlineKeyboardMarkup BoardFinalKeyboard() =>
+        new(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("🧭 How the top 50 earn", Mix),
+            InlineKeyboardButton.WithCallbackData("🚀 Movers", Movers),
+        });
+
+    public static InlineKeyboardMarkup MoversKeyboard() =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("🚀 Movers", Movers) });
+
+    public static InlineKeyboardMarkup MomentumKeyboard(string wallet) =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("📈 My momentum", MomentumData(wallet)) });
+
+    public static InlineKeyboardMarkup MixKeyboard() =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("🧭 How the top 50 earn", Mix) });
+
+    // Retry buttons for the leaderboard screens
+    public static InlineKeyboardMarkup BoardKeyboard() =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("🏅 Leaderboard", Board) });
+
+    public static InlineKeyboardMarkup PositionKeyboard(string wallet) =>
+        new(new[] { InlineKeyboardButton.WithCallbackData("🏅 My position", PositionData(wallet)) });
 
     // Retry button for the market overview
     public static InlineKeyboardMarkup MarketsKeyboard() =>
@@ -82,6 +123,11 @@ public static class ReportButtons
             {
                 InlineKeyboardButton.WithCallbackData("✅ Full report", FullData(wallet)),
                 InlineKeyboardButton.WithCallbackData("❌ No thanks", Decline),
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🏅 My position", PositionData(wallet)),
+                InlineKeyboardButton.WithCallbackData("📈 My momentum", MomentumData(wallet)),
             },
             new[] { InlineKeyboardButton.WithCallbackData("🖼 Share card", CardData(wallet)) },
         });

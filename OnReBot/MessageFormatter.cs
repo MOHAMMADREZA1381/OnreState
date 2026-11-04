@@ -7,7 +7,7 @@ namespace OnReBot;
 
 // All messages use Telegram's HTML tags: <b> for titles and values, <i> for hints, <code> for addresses and numbers in lists,
 // <pre> for aligned tables and <blockquote> for notes. Dynamic text is always escaped with Esc.
-public static class MessageFormatter
+public static partial class MessageFormatter
 {
     private const string Divider = "━━━━━━━━━━━━━━━━";
     private const string Unavailable = "⚠️ <i>currently unavailable</i>";
@@ -34,11 +34,11 @@ public static class MessageFormatter
     }
 
     // Step 1: only rank and points (a single fast request), followed by the question about the full report.
-    public static string FormatSummary(OnReResponse? onRe, bool onReFailed)
+    public static string FormatSummary(OnReResponse? onRe, bool onReFailed, long? totalUsers = null)
     {
         var sb = new StringBuilder();
         AppendHeader(sb);
-        AppendOnReBlock(sb, onReFailed, onRe);
+        AppendOnReBlock(sb, onReFailed, onRe, totalUsers);
         sb.AppendLine();
         sb.AppendLine(FullReportPrompt);
         return sb.ToString().TrimEnd();
@@ -70,11 +70,13 @@ public static class MessageFormatter
     }
 
     // Market overview: APY, prices and maturity of the active OnRe markets. The same for every user, so it needs no wallet.
-    public static string FormatMarkets(ExponentOverview? overview, bool failed, DateTimeOffset now)
+    public static string FormatMarkets(ExponentOverview? overview, bool failed, DateTimeOffset now, OnReStats? stats = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("📊 <b>OnRe Markets</b>");
         sb.AppendLine(Divider);
+        if (StatsLine(stats) is { Length: > 0 } statsLine)
+            sb.AppendLine($"\n{statsLine}");
 
         if (failed || overview == null)
         {
@@ -113,8 +115,9 @@ public static class MessageFormatter
             sb.AppendLine("\n<i>No active OnRe markets found.</i>");
 
         sb.AppendLine("\n<blockquote><b>Implied APY</b>: yield the market is pricing in\n<b>Underlying</b>: current yield of the token itself\n<b>Token price</b>: USD value of one token</blockquote>");
-        if (overview.CachedAgeSeconds != null)
-            sb.AppendLine($"🕒 <i>cached data · {Age(overview.CachedAgeSeconds.Value)} old</i>");
+        var marketsAge = Math.Max(overview.CachedAgeSeconds ?? -1, stats?.CachedSeconds ?? -1);
+        if (marketsAge >= 0)
+            sb.AppendLine($"🕒 <i>cached data · {Age(marketsAge)} old</i>");
         return sb.ToString().TrimEnd();
     }
 
@@ -249,6 +252,160 @@ public static class MessageFormatter
         var cached = rates.Where(r => r.CachedSeconds != null).Select(r => r.CachedSeconds!.Value).DefaultIfEmpty(-1).Max();
         if (cached >= 0)
             sb.AppendLine($"🕒 <i>cached data · {Age(cached)} old</i>");
+        return sb.ToString().TrimEnd();
+    }
+
+    // OnRe's official numbers (NAV, APY, AUM) as one line, or "" when none is known.
+    private static string StatsLine(OnReStats? stats)
+    {
+        if (stats == null)
+            return "";
+
+        var parts = new List<string>();
+        if (stats.Nav != null)
+            parts.Add($"NAV <b>${Price(stats.Nav.Value)}</b>");
+        if (stats.Apy != null)
+            parts.Add($"APY <b>{Percent(stats.Apy)}</b>");
+        if (stats.Aum != null)
+            parts.Add($"AUM <b>{Compact(stats.Aum.Value)}</b>");
+        return parts.Count == 0 ? "" : $"🏛 <b>OnRe</b> · {string.Join(" · ", parts)}";
+    }
+
+    // 285007636 -> "$285.0M"
+    private static string Compact(decimal usd) =>
+        usd >= 1_000_000_000m ? $"${(usd / 1_000_000_000m).ToString("0.0", CultureInfo.InvariantCulture)}B"
+        : usd >= 1_000_000m ? $"${(usd / 1_000_000m).ToString("0.0", CultureInfo.InvariantCulture)}M"
+        : $"${Num(usd)}";
+
+    // "Top 5.5%": the share of wallets that rank at or above this one. Never shown as 0.
+    private static string TopPercent(int rank, long totalUsers)
+    {
+        var percent = Math.Max(0.1m, Math.Round(rank * 100m / Math.Max(totalUsers, 1), 1));
+        return $"Top {percent.ToString("0.0", CultureInfo.InvariantCulture)}%";
+    }
+
+    // The top of OnRe's leaderboard (the same list as in the OnRe app). Addresses are shown shortened, as in the app.
+    public static string FormatLeaderboard(LeaderboardPage? top, bool failed)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("🏅 <b>OnRe Leaderboard</b>");
+        sb.AppendLine(Divider);
+
+        if (failed || top == null || top.Content.Count == 0)
+        {
+            sb.AppendLine($"\n<b>Leaderboard</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+
+        var width = top.Content.Max(e => Num(e.TotalPoints).Length);
+        var rows = top.Content.Select(e => $"{("#" + e.Rank).PadRight(4)} {Short(e.Address)}  {Num(e.TotalPoints).PadLeft(width)}");
+        sb.AppendLine();
+        sb.AppendLine(Pre(rows));
+        sb.AppendLine($"<i>{Num(top.TotalElements)} wallets have points. Same list as in the OnRe app.</i>");
+        if (top.CachedSeconds != null)
+            sb.AppendLine($"🕒 <i>cached data · {Age(top.CachedSeconds.Value)} old</i>");
+        return sb.ToString().TrimEnd();
+    }
+
+    // Where one wallet stands: its neighbours and how many points the next goals are away.
+    public static string FormatPosition(LeaderboardPosition? p, string wallet, bool failed, bool noPoints)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("🏅 <b>Your position</b>");
+        sb.AppendLine(Divider);
+
+        if (failed || (p == null && !noPoints))
+        {
+            sb.AppendLine($"\n<b>Leaderboard</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+        if (noPoints || p == null)
+        {
+            sb.AppendLine("\n<i>This wallet has no OnRe points yet, so it is not on the leaderboard.</i>");
+            return sb.ToString().TrimEnd();
+        }
+
+        sb.AppendLine($"\n🥇 <b>#{Num(p.Rank)}</b> of {Num(p.TotalUsers)} · <b>{TopPercent(p.Rank, p.TotalUsers)}</b>");
+
+        if (p.Neighbours.Count > 0)
+        {
+            var rankWidth = p.Neighbours.Max(e => ("#" + Num(e.Rank)).Length);
+            var pointsWidth = p.Neighbours.Max(e => Num(e.TotalPoints).Length);
+            var rows = p.Neighbours.Select(e =>
+            {
+                var you = e.Address == wallet;
+                return $"{("#" + Num(e.Rank)).PadRight(rankWidth)} {Short(e.Address)}  {Num(e.TotalPoints).PadLeft(pointsWidth)}{(you ? " ◀ you" : "")}";
+            });
+            sb.AppendLine();
+            sb.AppendLine(Pre(rows));
+        }
+
+        if (p.Rank == 1)
+        {
+            sb.AppendLine("🏆 <b>You are #1</b>");
+        }
+        else
+        {
+            if (p.NextRankPoints is { } next)
+            {
+                var gap = next - p.Points;
+                sb.AppendLine(gap > 0
+                    ? $"⬆️ To pass #{Num(p.Rank - 1)}: <b>+{Num(Math.Ceiling(gap))}</b> points"
+                    : $"⬆️ <i>You are level with #{Num(p.Rank - 1)}</i>");
+            }
+            foreach (var goal in p.Goals)
+            {
+                var gap = goal.TotalPoints - p.Points;
+                if (gap > 0)
+                    sb.AppendLine($"🎯 To reach #{Num(goal.Rank)}: <b>+{Num(Math.Ceiling(gap))}</b> points");
+            }
+        }
+
+        sb.AppendLine("\n<i>Everyone keeps earning points, so these gaps move.</i>");
+        if (p.CachedSeconds != null)
+            sb.AppendLine($"🕒 <i>cached data · {Age(p.CachedSeconds.Value)} old</i>");
+        return sb.ToString().TrimEnd();
+    }
+
+    // Where the points of the top wallets come from (the same data as the leaderboard, summed per platform).
+    public static string FormatMix(LeaderboardPage? top, bool failed)
+    {
+        var sb = new StringBuilder();
+        var count = top?.Content.Count ?? 0;
+        sb.AppendLine($"🧭 <b>How the top {(count > 0 ? count.ToString() : "")} earn points</b>".Replace("top  ", "top "));
+        sb.AppendLine(Divider);
+
+        if (failed || top == null || count == 0)
+        {
+            sb.AppendLine($"\n<b>Leaderboard</b>\n{Unavailable}");
+            return sb.ToString().TrimEnd();
+        }
+
+        var mix = PlatformMix.Build(top.Content);
+        if (mix.Count == 0)
+        {
+            sb.AppendLine("\n<i>No platform points found for these wallets.</i>");
+            return sb.ToString().TrimEnd();
+        }
+
+        string Bar(decimal share)
+        {
+            var filled = share > 0 ? Math.Clamp((int)Math.Round(share * 10), 1, 10) : 0;
+            return new string('█', filled) + new string('░', 10 - filled);
+        }
+
+        var rows = mix.Select(r => $"{r.Name.PadRight(11)} {Bar(r.Share)}  {(r.Share * 100).ToString("0.0", CultureInfo.InvariantCulture).PadLeft(5)}%  {r.Wallets.ToString().PadLeft(2)}/{count}");
+        sb.AppendLine();
+        sb.AppendLine(Pre(rows));
+
+        var biggest = mix[0];
+        var common = mix.OrderByDescending(r => r.Wallets).ThenByDescending(r => r.Points).First();
+        sb.AppendLine($"🥇 Most points: <b>{Esc(biggest.Name)}</b> ({(biggest.Share * 100).ToString("0.0", CultureInfo.InvariantCulture)}% of them)");
+        sb.AppendLine($"🤝 Most used: <b>{Esc(common.Name)}</b> ({common.Wallets} of {count} wallets)");
+        sb.AppendLine($"\n<blockquote>The bar and percentage are each platform's part of all the points of these {count} wallets. The numbers on the right say how many of them earn points there.</blockquote>");
+        sb.AppendLine("<i>Same OnRe data as the leaderboard. It changes as points are earned.</i>");
+        if (top.CachedSeconds != null)
+            sb.AppendLine($"🕒 <i>cached data · {Age(top.CachedSeconds.Value)} old</i>");
         return sb.ToString().TrimEnd();
     }
 
@@ -393,7 +550,7 @@ public static class MessageFormatter
         sb.AppendLine(Divider);
     }
 
-    private static void AppendOnReBlock(StringBuilder sb, bool onReFailed, OnReResponse? onRe)
+    private static void AppendOnReBlock(StringBuilder sb, bool onReFailed, OnReResponse? onRe, long? totalUsers = null)
     {
         var noPoints = !onReFailed && onRe is { TotalPoints: 0 };
 
@@ -408,7 +565,9 @@ public static class MessageFormatter
         else if (onRe != null)
         {
             sb.AppendLine($"👛 Wallet: <code>{Esc(Short(onRe.Address))}</code>");
-            sb.AppendLine($"🥇 Rank: <b>#{Num(onRe.Rank)}</b>");
+            sb.AppendLine(totalUsers is > 0
+                ? $"🥇 Rank: <b>#{Num(onRe.Rank)}</b> · {TopPercent(onRe.Rank, totalUsers.Value)} of {Num(totalUsers.Value)}"
+                : $"🥇 Rank: <b>#{Num(onRe.Rank)}</b>");
             sb.AppendLine($"⭐ Total points: <b>{Num(onRe.TotalPoints)}</b>");
             sb.AppendLine();
             sb.AppendLine("📊 <b>Points by platform</b>");
@@ -507,7 +666,7 @@ public static class MessageFormatter
         Line("Permissionless Boost", b.PermissionlessBoost);
         Line("Kamino", b.Kamino.Values.Sum());
 
-        var exponentTotal = b.Exponent.Yt + b.Exponent.Lp;
+        var exponentTotal = b.Exponent.Total;
         Line("Exponent", exponentTotal);
         if (exponentTotal != 0)
         {

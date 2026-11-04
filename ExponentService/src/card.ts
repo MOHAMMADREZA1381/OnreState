@@ -5,7 +5,13 @@ import { Resvg } from "@resvg/resvg-js";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-export type CardData = { wallet: string; rank: number; totalPoints: number; platforms: { name: string; points: number }[] };
+export type CardData = {
+  wallet: string;
+  rank: number;
+  totalPoints: number;
+  totalUsers: number | null; // how many wallets have points, for "Top x%" (optional)
+  platforms: { name: string; points: number }[];
+};
 
 const MAX_ROWS = 5;
 const WALLET = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -20,6 +26,12 @@ export function sanitizeCard(input: unknown): CardData | null {
   if (typeof c.totalPoints !== "number" || !Number.isFinite(c.totalPoints) || c.totalPoints < 0 || c.totalPoints > 1e15) return null;
   if (!Array.isArray(c.platforms) || c.platforms.length > MAX_ROWS) return null;
 
+  let totalUsers: number | null = null;
+  if (c.totalUsers !== undefined && c.totalUsers !== null) {
+    if (typeof c.totalUsers !== "number" || !Number.isInteger(c.totalUsers) || c.totalUsers < 1 || c.totalUsers > 1_000_000_000) return null;
+    totalUsers = c.totalUsers;
+  }
+
   const platforms: CardData["platforms"] = [];
   for (const p of c.platforms) {
     if (typeof p !== "object" || p === null) return null;
@@ -28,17 +40,23 @@ export function sanitizeCard(input: unknown): CardData | null {
     if (typeof points !== "number" || !Number.isFinite(points) || points < 0 || points > 1e15) return null;
     platforms.push({ name, points });
   }
-  return { wallet: c.wallet, rank: c.rank, totalPoints: c.totalPoints, platforms };
+  return { wallet: c.wallet, rank: c.rank, totalPoints: c.totalPoints, totalUsers, platforms };
 }
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// "Top 5.5% of 25,079 wallets" (never shown as 0%); empty when the number of wallets is unknown or the rank is 0
+function topLine(c: CardData): string {
+  if (c.totalUsers === null || c.rank < 1) return "";
+  const percent = Math.max(0.1, Math.round((c.rank * 1000) / c.totalUsers) / 10);
+  return `Top ${percent.toFixed(1)}% of ${fmt(c.totalUsers)} wallets`;
+}
 const short = (wallet: string) => `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
 
 export function buildSvg(c: CardData): string {
   const rows = c.platforms
     .map((p, i) => {
-      const y = 372 + i * 44;
+      const y = 374 + i * 42;
       const share = c.totalPoints > 0 ? Math.max(0.01, p.points / c.totalPoints) : 0.01;
       const width = Math.round(340 * Math.min(1, share));
       return `
@@ -57,20 +75,21 @@ export function buildSvg(c: CardData): string {
     </linearGradient>
   </defs>
   <rect width="1200" height="630" fill="url(#bg)"/>
-  <rect x="40" y="40" width="1120" height="550" rx="28" fill="none" stroke="#25405a" stroke-width="2"/>
+  <rect x="40" y="40" width="1120" height="560" rx="28" fill="none" stroke="#25405a" stroke-width="2"/>
 
   <text x="80" y="112" font-size="32" font-weight="700" fill="#35d0a0">OnRe Rank Report</text>
   <text x="1120" y="112" font-size="24" fill="#9fb0c3" text-anchor="end">${esc(short(c.wallet))}</text>
 
-  <text x="80" y="226" font-size="22" fill="#9fb0c3">RANK</text>
-  <text x="80" y="296" font-size="68" font-weight="700" fill="#ffffff">#${fmt(c.rank)}</text>
-  <text x="560" y="226" font-size="22" fill="#9fb0c3">TOTAL POINTS</text>
-  <text x="560" y="296" font-size="68" font-weight="700" fill="#ffffff">${fmt(c.totalPoints)}</text>
+  <text x="80" y="200" font-size="22" fill="#9fb0c3">RANK</text>
+  <text x="80" y="268" font-size="68" font-weight="700" fill="#ffffff">#${fmt(c.rank)}</text>
+  <text x="80" y="304" font-size="22" fill="#35d0a0">${esc(topLine(c))}</text>
+  <text x="560" y="200" font-size="22" fill="#9fb0c3">TOTAL POINTS</text>
+  <text x="560" y="268" font-size="68" font-weight="700" fill="#ffffff">${fmt(c.totalPoints)}</text>
 
-  <line x1="80" y1="324" x2="1120" y2="324" stroke="#25405a" stroke-width="2"/>
+  <line x1="80" y1="332" x2="1120" y2="332" stroke="#25405a" stroke-width="2"/>
   ${rows}
 
-  <text x="80" y="572" font-size="20" fill="#6f8296">Check yours: t.me/onre_rank_bot</text>
+  <text x="80" y="584" font-size="20" fill="#6f8296">Check yours: t.me/onre_rank_bot</text>
 </svg>`;
 }
 

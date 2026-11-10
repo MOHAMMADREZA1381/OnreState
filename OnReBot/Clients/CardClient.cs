@@ -4,15 +4,21 @@ using OnReBot.Models;
 
 namespace OnReBot.Clients;
 
-// Asks the Node service to draw the share card (an image with rank, points and points per platform).
+// Asks the Node service to draw share cards and Time Machine charts.
 // Nothing is stored: the wallet and numbers are only used to draw the image.
 public class CardClient(HttpClient http, string serviceUrl)
 {
     private const int MaxRows = 5;
 
-    public async Task<byte[]> RenderAsync(string wallet, OnReResponse onRe, long? totalUsers, CancellationToken ct)
+    public Task<byte[]> RenderAsync(string wallet, OnReResponse onRe, long? totalUsers, CancellationToken ct) =>
+        PostImageAsync("card", Build(wallet, onRe, totalUsers), ct);
+
+    public Task<byte[]> RenderProgressAsync(ProgressChart chart, CancellationToken ct) =>
+        PostImageAsync("progress-chart", new { chart.Wallet, chart.Days }, ct);
+
+    private async Task<byte[]> PostImageAsync<T>(string route, T data, CancellationToken ct)
     {
-        using var response = await http.PostAsJsonAsync($"{serviceUrl.TrimEnd('/')}/card", Build(wallet, onRe, totalUsers), new JsonSerializerOptions(JsonSerializerDefaults.Web), ct);
+        using var response = await http.PostAsJsonAsync($"{serviceUrl.TrimEnd('/')}/{route}", data, new JsonSerializerOptions(JsonSerializerDefaults.Web), ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsByteArrayAsync(ct);
     }

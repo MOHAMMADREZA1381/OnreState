@@ -38,7 +38,10 @@ var portfolio = new PortfolioService(
         : new HttpExponentPositionProvider(new HttpClient { Timeout = TimeSpan.FromSeconds(25) }, config));
 
 // Stored outside the project folder so rebuilds never touch it.
-var usersFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OnReBot", "users.txt");
+var dataDir = Environment.GetEnvironmentVariable("ONRE_DATA_DIR");
+if (string.IsNullOrWhiteSpace(dataDir))
+    dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OnReBot");
+var usersFile = Path.Combine(dataDir, "users.txt");
 var users = new UserTracker(usersFile);
 
 // The Time Machine: an hourly snapshot of OnRe's public leaderboard (rank, address and points per wallet, nothing about the bot's own
@@ -61,7 +64,19 @@ var telegramHttp = new HttpClient(new SocketsHttpHandler
 {
     Timeout = TimeSpan.FromSeconds(130)
 };
-var bot = new TelegramBotClient(token, telegramHttp);
+TelegramBotClient bot;
+User me;
+try
+{
+    bot = new TelegramBotClient(token, telegramHttp);
+    using var startupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    me = await bot.GetMe(startupTimeout.Token);
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"Telegram startup failed ({ex.GetType().Name}). Check BOT_TOKEN and network access.");
+    return 1;
+}
 var waitingForAddress = new ConcurrentDictionary<long, bool>();
 const int MaxReportsPerWindow = 2;
 var reportWindow = TimeSpan.FromMinutes(5);
@@ -83,7 +98,7 @@ var positionTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // The calculator asks Jupiter for about five quotes per amount and the amount differs per user (so nothing can be shared), hence a tighter limit.
 const int MaxCalcPerWindow = 3;
 var calcTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
-// A card needs a fresh OnRe request and an image render, so it has a limit like the full report.
+// Share cards and progress charts share an image render budget.
 const int MaxCardsPerWindow = 2;
 var cardTimes = new ConcurrentDictionary<long, List<DateTimeOffset>>();
 // Chats that are about to type an amount for the calculator (true = buy ONyc with USDC, false = sell ONyc).
@@ -99,7 +114,6 @@ _ = snapshotJob.RunAsync(cts.Token);
 
 bot.StartReceiving(HandleUpdate, HandleError, new ReceiverOptions { AllowedUpdates = [UpdateType.Message, UpdateType.CallbackQuery] }, cts.Token);
 
-var me = await bot.GetMe(cts.Token);
 Console.WriteLine($"Bot @{me.Username} is running. Press Ctrl+C to stop.");
 await Task.Delay(Timeout.Infinite, cts.Token).ContinueWith(_ => { });
 return 0;
@@ -120,7 +134,7 @@ Task HandleUpdate(ITelegramBotClient client, Update update, CancellationToken ct
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Update {update.Id} failed: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine($"Update {update.Id} failed: {ex.GetType().Name}: {SafeError(ex)}");
         }
     });
     return Task.CompletedTask;
@@ -152,24 +166,28 @@ async Task ProcessUpdate(ITelegramBotClient client, Update update, CancellationT
         return;
     }
 
-    // The user tapped "Share card" under the quick summary (the buttons stay, so the full report is still one tap away).
-    if (update.CallbackQuery is { Message: { } cardMessage } cardCallback && ReportButtons.TryParseCard(cardCallback.Data, out var cardWallet))
+    // Image buttons stay under the quick summary so the full report is still one tap away.
+    if (update.CallbackQuery is { Message: { } cardMessage } cardCallback)
     {
-        var cardChatId = cardMessage.Chat.Id;
-        var cardNow = DateTimeOffset.UtcNow;
-        var cardWait = TryTake(cardTimes, cardChatId, MaxCardsPerWindow, cardNow, out var cardUses);
-        if (cardWait != null)
+        var isProgress = ReportButtons.TryParseProgress(cardCallback.Data, out var imageWallet);
+        if (isProgress || ReportButtons.TryParseCard(cardCallback.Data, out imageWallet))
         {
-            await client.AnswerCallbackQuery(cardCallback.Id,
-                $"Rate limit reached: 2 cards every 5 minutes. Try again in {Math.Ceiling(cardWait.Value.TotalSeconds)}s.",
-                showAlert: true, cancellationToken: ct);
+            var cardChatId = cardMessage.Chat.Id;
+            var cardNow = DateTimeOffset.UtcNow;
+            var cardWait = TryTake(cardTimes, cardChatId, MaxCardsPerWindow, cardNow, out var cardUses);
+            if (cardWait != null)
+            {
+                await client.AnswerCallbackQuery(cardCallback.Id,
+                    $"Rate limit reached: 2 images every 5 minutes. Try again in {Math.Ceiling(cardWait.Value.TotalSeconds)}s.",
+                    showAlert: true, cancellationToken: ct);
+                return;
+            }
+
+            await client.AnswerCallbackQuery(cardCallback.Id, cancellationToken: ct);
+            await users.RegisterAsync(cardCallback.From.Id, ct);
+            _ = Task.Run(() => SendCardAsync(client, cardChatId, imageWallet, isProgress, cardNow, cardUses, ct), ct);
             return;
         }
-
-        await client.AnswerCallbackQuery(cardCallback.Id, cancellationToken: ct);
-        await users.RegisterAsync(cardCallback.From.Id, ct);
-        _ = Task.Run(() => SendCardAsync(client, cardChatId, cardWallet, cardNow, cardUses, ct), ct);
-        return;
     }
 
     // Step 3: the user tapped "History" under the positions.
@@ -485,7 +503,7 @@ async Task RemoveKeyboardAsync(ITelegramBotClient client, long chatId, int messa
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        Console.Error.WriteLine($"Could not remove buttons: {ex.Message}");
+        Console.Error.WriteLine($"Could not remove buttons: {SafeError(ex)}");
     }
 }
 
@@ -556,16 +574,17 @@ Task SendMarketsAsync(ITelegramBotClient client, long chatId, DateTimeOffset req
         retryKeyboard: ReportButtons.MarketsKeyboard(), finalKeyboard: null, ct);
 
 // Share card: an image with the rank, points and points per platform. Draws only what OnRe already shows in the summary.
-async Task SendCardAsync(ITelegramBotClient client, long chatId, string wallet, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct)
+async Task SendCardAsync(ITelegramBotClient client, long chatId, string wallet, bool isProgress, DateTimeOffset requestedAt, List<DateTimeOffset> times, CancellationToken ct)
 {
     var gotSlot = false;
     int? placeholderId = null;
+    var imageName = isProgress ? "progress chart" : "card";
     try
     {
         if (cardClient == null)
         {
             lock (times) times.Remove(requestedAt);
-            await client.SendMessage(chatId, "🖼 <b>Cards are not available right now.</b>", parseMode: ParseMode.Html, cancellationToken: ct);
+            await client.SendMessage(chatId, $"🖼 <b>The {imageName} is not available right now.</b>", parseMode: ParseMode.Html, cancellationToken: ct);
             return;
         }
 
@@ -577,34 +596,52 @@ async Task SendCardAsync(ITelegramBotClient client, long chatId, string wallet, 
             return;
         }
 
-        placeholderId = await TrySendAsync(client, chatId, "⏳ <i>Creating your card…</i>", ct);
-        var summary = await portfolio.GetSummaryAsync(wallet, ct);
-        if (summary.Failed || summary.OnRe == null || summary.OnRe.TotalPoints <= 0)
+        placeholderId = await TrySendAsync(client, chatId, $"⏳ <i>Creating your {imageName}…</i>", ct);
+        byte[] png;
+        if (isProgress)
         {
-            lock (times) times.Remove(requestedAt);
-            await ShowAsync(client, chatId, placeholderId,
-                summary.Failed ? "⚠️ <b>Could not read your points right now</b>\n<i>Please try again in a moment.</i>"
-                    : "🖼 <b>Nothing to share yet</b>\n<i>This wallet has no OnRe points.</i>", null, ct);
-            return;
+            var chart = TimeMachine.GetProgressChart(snapshots, wallet, requestedAt);
+            if (!chart.HasData)
+            {
+                lock (times) times.Remove(requestedAt);
+                await ShowAsync(client, chatId, placeholderId,
+                    "📈 <b>No progress data yet</b>\n<i>Time Machine has no saved Points and Rank for this wallet in the last 7 UTC days.</i>", null, ct);
+                return;
+            }
+            png = await cardClient.RenderProgressAsync(chart, ct);
+        }
+        else
+        {
+            var summary = await portfolio.GetSummaryAsync(wallet, ct);
+            if (summary.Failed || summary.OnRe == null || summary.OnRe.TotalPoints <= 0)
+            {
+                lock (times) times.Remove(requestedAt);
+                await ShowAsync(client, chatId, placeholderId,
+                    summary.Failed ? "⚠️ <b>Could not read your points right now</b>\n<i>Please try again in a moment.</i>"
+                        : "🖼 <b>Nothing to share yet</b>\n<i>This wallet has no OnRe points.</i>", null, ct);
+                return;
+            }
+            png = await cardClient.RenderAsync(wallet, summary.OnRe, await portfolio.GetTotalUsersAsync(ct), ct);
         }
 
-        var png = await cardClient.RenderAsync(wallet, summary.OnRe, await portfolio.GetTotalUsersAsync(ct), ct);
         using var stream = new MemoryStream(png);
-        await client.SendPhoto(chatId, InputFile.FromStream(stream, "onre-rank-card.png"), caption: "🏆 OnRe rank card · t.me/onre_rank_bot", cancellationToken: ct);
+        var filename = isProgress ? "onre-progress-chart.png" : "onre-rank-card.png";
+        var caption = isProgress ? "📈 OnRe progress · 7 UTC days · Time Machine" : "🏆 OnRe rank card · t.me/onre_rank_bot";
+        await client.SendPhoto(chatId, InputFile.FromStream(stream, filename), caption: caption, cancellationToken: ct);
         if (placeholderId != null)
             await client.DeleteMessage(chatId, placeholderId.Value, ct);
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        Console.Error.WriteLine($"Card failed: {ex.GetType().Name}: {ex.Message}");
+        Console.Error.WriteLine($"Card failed: {ex.GetType().Name}: {SafeError(ex)}");
         lock (times) times.Remove(requestedAt);
         try
         {
-            await ShowAsync(client, chatId, placeholderId, "⚠️ <b>Could not create the card</b>\n<i>Please try again in a moment.</i>", null, ct);
+            await ShowAsync(client, chatId, placeholderId, $"⚠️ <b>Could not create the {imageName}</b>\n<i>Please try again in a moment.</i>", null, ct);
         }
         catch (Exception sendEx)
         {
-            Console.Error.WriteLine($"Could not send error message: {sendEx.Message}");
+            Console.Error.WriteLine($"Could not send error message: {SafeError(sendEx)}");
         }
     }
     finally
@@ -688,7 +725,7 @@ async Task RunJobAsync(ITelegramBotClient client, long chatId, DateTimeOffset re
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        Console.Error.WriteLine($"Job failed: {ex.GetType().Name}: {ex.Message}");
+        Console.Error.WriteLine($"Job failed: {ex.GetType().Name}: {SafeError(ex)}");
         lock (times) times.Remove(requestedAt);
         try
         {
@@ -696,7 +733,7 @@ async Task RunJobAsync(ITelegramBotClient client, long chatId, DateTimeOffset re
         }
         catch (Exception sendEx)
         {
-            Console.Error.WriteLine($"Could not send error message: {sendEx.Message}");
+            Console.Error.WriteLine($"Could not send error message: {SafeError(sendEx)}");
         }
     }
     finally
@@ -715,7 +752,7 @@ async Task<int?> TrySendAsync(ITelegramBotClient client, long chatId, string tex
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        Console.Error.WriteLine($"Could not send placeholder: {ex.Message}");
+        Console.Error.WriteLine($"Could not send placeholder: {SafeError(ex)}");
         return null;
     }
 }
@@ -733,7 +770,7 @@ async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, str
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Console.Error.WriteLine($"Could not edit message, sending a new one: {ex.Message}");
+            Console.Error.WriteLine($"Could not edit message, sending a new one: {SafeError(ex)}");
         }
     }
     try
@@ -743,13 +780,18 @@ async Task ShowAsync(ITelegramBotClient client, long chatId, int? messageId, str
     catch (Exception ex) when (ex.Message.Contains("can't parse entities", StringComparison.OrdinalIgnoreCase))
     {
         // Safety net: a formatting mistake must not leave the user without a report
-        Console.Error.WriteLine($"HTML rejected, sending plain text: {ex.Message}");
+        Console.Error.WriteLine($"HTML rejected, sending plain text: {SafeError(ex)}");
         await client.SendMessage(chatId, MessageFormatter.ToPlainText(text), replyMarkup: replyMarkup, cancellationToken: ct);
     }
 }
 
+// Telegram transport errors can include the request URL, which contains the token.
+string SafeError(Exception error) => error.Message
+    .Replace(token, "[redacted]", StringComparison.Ordinal)
+    .Replace(Uri.EscapeDataString(token), "[redacted]", StringComparison.OrdinalIgnoreCase);
+
 Task HandleError(ITelegramBotClient client, Exception exception, HandleErrorSource source, CancellationToken ct)
 {
-    Console.Error.WriteLine($"[{source}] {exception.Message}");
+    Console.Error.WriteLine($"[{source}] {SafeError(exception)}");
     return Task.CompletedTask;
 }

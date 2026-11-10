@@ -51,6 +51,35 @@ public static class TimeMachine
         return new Momentum { Window = window, IsNew = true, OldRank = old.Entries.Count + 1, NewRank = current.Rank, OldPoints = 0, NewPoints = current.Points };
     }
 
+    public static ProgressChart GetProgressChart(SnapshotStore store, string wallet, DateTimeOffset now)
+    {
+        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        var firstDay = today.AddDays(-6);
+        var start = new DateTimeOffset(firstDay.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var byDay = store.List().Where(at => at >= start && at <= now)
+            .Reverse().ToLookup(at => DateOnly.FromDateTime(at.UtcDateTime));
+
+        var days = new List<ProgressDay>(7);
+        for (var date = firstDay; date <= today; date = date.AddDays(1))
+        {
+            Snapshot? snapshot = null;
+            foreach (var at in byDay[date])
+            {
+                snapshot = store.Load(at);
+                if (snapshot != null)
+                    break;
+            }
+
+            // Absence from a real snapshot is a gap, including when an earlier snapshot that day had the wallet.
+            var entry = snapshot?.Entries.Find(entry => entry.Address == wallet);
+            days.Add(entry is { Rank: > 0, Points: >= 0 }
+                ? new ProgressDay(date, entry.Points, entry.Rank)
+                : new ProgressDay(date, null, null));
+        }
+
+        return new ProgressChart(wallet, days);
+    }
+
     public static MomentumResult GetMomentum(SnapshotStore store, string wallet)
     {
         var times = store.List();

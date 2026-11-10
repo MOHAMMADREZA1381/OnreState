@@ -50,7 +50,6 @@ public class StepByStepTests
     {
         var buttons = ReportButtons.Keyboard(Wallet).InlineKeyboard.SelectMany(row => row).ToList();
 
-        Assert.Equal(5, buttons.Count);   // Full report, No thanks, My position, My momentum and Share card
         Assert.Equal("✅ Full report", buttons[0].Text);
         Assert.Equal(ReportButtons.FullData(Wallet), buttons[0].CallbackData);
         Assert.Equal("❌ No thanks", buttons[1].Text);

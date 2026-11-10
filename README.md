@@ -22,11 +22,12 @@ Send `/start`, tap **🏆 My Rank**, then send a Solana wallet address. **📊 M
 **⏳ Time Machine.** OnRe's API has no history, so the bot builds it: once an hour it saves a **snapshot of OnRe's public leaderboard** (rank, address and points of every wallet that has points, the same list the OnRe app shows, plus OnRe's NAV, APY and AUM at that moment). It reads 2,000 wallets per request, about 13 requests one second apart, which took 22 seconds and produced a 1 MB gzip file in a real run. Snapshots are kept as small files next to the users file (every snapshot for 48 hours, then one per day for 30 days, about 50 MB). With two snapshots a day apart the bot can show:
 
 - **📈 My momentum** (under the quick summary): the points you gained in the last 24 hours (and the last 7 days once a week of snapshots exists), your points per day, how many ranks you climbed or fell, and how many days the next round ranks (#1,000, #500, #100, #50, #10) are away *at the pace of the last day*. Everyone keeps earning points, so that is a rough guide, and the message says so. A comparison needs two snapshots at least 6 hours apart; until then the bot says how long to wait.
+- **📈 My Progress Chart** (under the quick summary): a shareable PNG with mint Points and muted orange Rank on a dark teal background. It shows today and the preceding six UTC dates, using the latest readable Time Machine snapshot for each date. Each date without a saved rank and points for the wallet is a gap. A single recorded day appears as a dot. With no recorded days, the bot sends a short explanation. The chart labels the shortened wallet address and compares the earliest and latest plotted values. Better ranks appear higher.
 - **🚀 Movers** (button under the leaderboard): the wallets that gained the most points and climbed the most ranks in 24 hours (among the top 5,000), and who is new in the top 100.
 
 **What is stored:** these snapshots contain only OnRe's *public* leaderboard (the same data anyone can read in the OnRe app), nothing about the bot's own users. The bot still stores no wallet address that a user typed in; it only keeps the numeric Telegram user ids it counts (see below).
 
-**🖼 Share card** (under the quick summary) sends a PNG you can post: rank, total points and the points per platform (the biggest four plus "Other"), with the address shortened to its first 6 and last 4 characters. It uses only what OnRe already shows in the summary, and nothing is stored. The Node service draws it from an SVG template with [resvg](https://github.com/yisibl/resvg-js) (no browser needed) and the DejaVu Sans font that ships with the `dejavu-fonts-ttf` package, so it does not depend on fonts installed on the server. Each image is rendered in its own short-lived process, one at a time, so the memory goes back to the system afterwards (the renderer keeps several MB allocated per image, which would add up in the long-running service). Each user may create 2 cards every 5 minutes.
+**🖼 Share card** (under the quick summary) sends a PNG with rank, total points and the points per platform (the biggest four plus "Other"). Both image features shorten the wallet address to its first 6 and last 4 characters and use the local Node service to render PNGs with [resvg](https://github.com/yisibl/resvg-js) and bundled DejaVu Sans fonts. A short-lived worker renders one image at a time. Share cards and progress charts share a limit of 2 images per chat every 5 minutes.
 
 **📊 Markets** (from `/start`, no wallet needed) starts with OnRe's official live numbers (NAV, APY and AUM from `core.api.onre.finance/data/live-nav`, `live-apy` and `live-tvl`, the same ones the OnRe app shows) and then shows, for each active OnRe market on Exponent: token price, implied APY, underlying APY, YT and PT price and the days to maturity, plus the senior/junior APY of the Protected tranche. It is the same for every user, so the Node service caches it for 5 minutes and the message says how old the data is when it is cached.
 
@@ -73,25 +74,37 @@ Requirements: .NET 8 SDK and Node.js 20+ (tested with Node 24).
    npm start
    ```
 
-   For development you can use `npm run dev` (runs the TypeScript directly).
+   Use the built service for share cards and progress charts so the image worker is available.
 
-3. In another terminal, start the bot with the token in an environment variable:
+3. In another terminal at the repository root, enter the **test bot token** at the hidden prompt. The bot reads it from `BOT_TOKEN` in the current process environment. Keep the token out of chat, command history, files, and Git.
 
    PowerShell:
 
    ```powershell
-   $env:BOT_TOKEN = "123456:ABC..."
-   dotnet run --project OnReBot
+   $env:ONRE_DATA_DIR = Join-Path $PWD 'local-test-data'
+   try {
+       $env:BOT_TOKEN = Read-Host 'Test bot token' -MaskInput
+       dotnet run --project OnReBot
+   } finally {
+       Remove-Item Env:BOT_TOKEN, Env:ONRE_DATA_DIR -ErrorAction SilentlyContinue
+   }
    ```
 
    bash:
 
    ```bash
-   export BOT_TOKEN="123456:ABC..."
-   dotnet run --project OnReBot
+   (
+     read -rsp 'Test bot token: ' BOT_TOKEN || exit 1
+     printf '\n'
+     export BOT_TOKEN
+     export ONRE_DATA_DIR="$PWD/local-test-data"
+     dotnet run --project OnReBot
+   )
    ```
 
-The Exponent service is optional: set `ExponentServiceUrl` to an empty string in `appsettings.json` to run the bot without it (Exponent positions are then hidden).
+The PowerShell prompt requires PowerShell 7.2 or newer. For a chart smoke test, run `/start`, choose **My Rank**, send a wallet address, and tap **📈 My Progress Chart**. Use a wallet from recent public snapshots. To reuse existing history, copy the recent `*.snap.gz` files into `local-test-data/snapshots/` before starting the test bot. The test bot uses this separate folder for its snapshots and user count. With an empty history, the hourly job starts its first capture shortly after startup.
+
+The Exponent service is optional: set `ExponentServiceUrl` to an empty string in `appsettings.json` to disable Exponent positions, Share card, and My Progress Chart rendering.
 
 ## Environment variables
 
@@ -100,13 +113,12 @@ None of these are stored in the repository.
 | Name | Description |
 |---|---|
 | `BOT_TOKEN` | Bot token from BotFather (required) |
+| `ONRE_DATA_DIR` | Optional data directory override for the user count and snapshots. Use a dedicated directory for a test bot. The default is the bot's existing `OnReBot` application data folder. |
 | `TITAN_API_KEY` | Free API key from the [Titan developer platform](https://developer.titan.exchange) (optional). Adds Titan to the swap prices; without it only Jupiter is shown. Never put it in a file in the repository |
 | `ADMIN_USER_ID` | Numeric Telegram id of the admin. Only this user gets a reply to `/stats` (optional; if unset, `/stats` is disabled) |
 | `SOLANA_RPC_URL` | Solana RPC used by the Exponent service (optional; a private RPC such as Helius or QuickNode is faster and avoids rate limits) |
 | `EXPONENT_SERVICE_PORT` | Port of the Exponent service (optional, default `3001`) |
 | `EXPONENT_TIMING` | Set to `1` to make the Exponent service log how long each step takes (optional, for finding slow spots) |
-
-For local runs you can keep these in a file named `run-local.ps1`; that name is listed in `.gitignore`.
 
 ## Configuration (`OnReBot/Config/appsettings.json`)
 
@@ -116,7 +128,7 @@ For local runs you can keep these in a file named `run-local.ps1`; that name is 
 | `KaminoReserves` | Known reserves as `{Address, Symbol, Decimals}`. Token amounts are shown only for these reserves. |
 | `LoopscaleVaults` | Array of `{Name, Address}` for Lend vaults. |
 | `ExponentMarkets` | Optional array of `{Name, Vault}`: extra Exponent vaults to check for YT positions, for example matured markets that the API no longer lists. Active OnRe markets are discovered automatically. |
-| `ExponentServiceUrl` | Address of the Exponent service (default `http://127.0.0.1:3001`). Empty disables Exponent positions. |
+| `ExponentServiceUrl` | Address of the Exponent service (default `http://127.0.0.1:3001`). Empty disables Exponent positions and image rendering. |
 
 ## Behavior
 
@@ -139,6 +151,10 @@ For local runs you can keep these in a file named `run-local.ps1`; that name is 
 ## Deployment
 
 A step-by-step guide for an Ubuntu server (systemd, `/opt/onrebot`) is in [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+
+For the progress chart release, first build both components and test the Telegram flow with a separate bot and recent snapshots. Check a wallet with multiple days, a gap, and a wallet with no recorded days. Also check Share card because it uses the same renderer.
+
+After approval to merge and deploy, record the current production revision and back up the deployed bot and renderer together. Retain the production snapshot directory and use the existing server-managed `BOT_TOKEN`. Build both components from the approved revision, check the package with `deploy.ps1 -DryRun`, then deploy both components together. Confirm both services are active and verify My Rank, My Progress Chart, and Share card in Telegram. If verification fails, restore the previous bot and renderer build together and restart both services while keeping the snapshots.
 
 ## Tests
 

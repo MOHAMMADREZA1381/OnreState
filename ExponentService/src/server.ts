@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Vault, YtPosition, LOCAL_ENV } from "@exponent-labs/exponent-sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { sanitizeCard } from "./card.js";
+import { sanitizeProgress } from "./progress-chart.js";
 import { getExtras, getMarketOverview, getOnReMarkets, getYtTrades, timed, type OnReMarket } from "./extras.js";
 
 const port = Number(process.env.EXPONENT_SERVICE_PORT ?? 3001);
@@ -216,19 +217,20 @@ async function getHistory(wallet: string, requestedVaults: string[]) {
   }
 }
 
-// Share card: rendered by a separate short-lived process (see card-worker.ts), one at a time so the small server's RAM stays safe.
+// Render one image at a time in a short-lived process to keep memory bounded on the server.
 const CARD_WORKER = fileURLToPath(new URL("./card-worker.js", import.meta.url));
 let cardQueue: Promise<unknown> = Promise.resolve();
 
-function renderCardInChild(json: string): Promise<Buffer> {
+function renderCardInChild(route: string, json: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CARD_WORKER], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [CARD_WORKER, route], { stdio: ["pipe", "pipe", "ignore"] });
     const out: Buffer[] = [];
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error("card timeout"));
     }, 10_000);
     child.stdout.on("data", (d: Buffer) => out.push(d));
+    child.stdin.on("error", reject);
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(e);
@@ -256,14 +258,15 @@ async function readBody(req: http.IncomingMessage, maxBytes: number): Promise<st
 http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
 
-  if (req.method === "POST" && url.pathname === "/card") {
+  if (req.method === "POST" && (url.pathname === "/card" || url.pathname === "/progress-chart")) {
     try {
-      const data = sanitizeCard(JSON.parse(await readBody(req, 4096)));
+      const sanitize = url.pathname === "/card" ? sanitizeCard : sanitizeProgress;
+      const data = sanitize(JSON.parse(await readBody(req, 4096)));
       if (data === null) {
-        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid card data" }));
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid image data" }));
         return;
       }
-      const job = cardQueue.then(() => renderCardInChild(JSON.stringify(data)));
+      const job = cardQueue.then(() => renderCardInChild(url.pathname, JSON.stringify(data)));
       cardQueue = job.catch(() => undefined);
       const png = await job;
       res.writeHead(200, { "Content-Type": "image/png" }).end(png);

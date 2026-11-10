@@ -11,6 +11,7 @@ public static class ReportButtons
     public const string FullPrefix = "full:";
     public const string HistoryPrefix = "hist:";
     public const string CardPrefix = "card:";
+    public const string ProgressPrefix = "progress:";
     public const string Decline = "no";
     public const string Rank = "rank";
     public const string Markets = "markets";
@@ -29,6 +30,8 @@ public static class ReportButtons
     public static string HistoryData(string wallet) => HistoryPrefix + wallet;
 
     public static string CardData(string wallet) => CardPrefix + wallet;
+    public static string ProgressData(string wallet) => ProgressPrefix + wallet;
+    public static bool TryParseProgress(string? data, out string wallet) => TryParse(ProgressPrefix, data, out wallet);
 
     public static string MomentumData(string wallet) => MomentumPrefix + wallet;
 
@@ -130,6 +133,7 @@ public static class ReportButtons
                 InlineKeyboardButton.WithCallbackData("📈 My momentum", MomentumData(wallet)),
             },
             new[] { InlineKeyboardButton.WithCallbackData("🖼 Share card", CardData(wallet)) },
+            new[] { InlineKeyboardButton.WithCallbackData("📈 My Progress Chart", ProgressData(wallet)) },
         });
 
     // Step 3 button under the positions

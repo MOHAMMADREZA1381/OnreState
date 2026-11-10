@@ -14,7 +14,7 @@ export type CardData = {
 };
 
 const MAX_ROWS = 5;
-const WALLET = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export const WALLET = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 // Validates the request body. Returns null when anything is off, so a bad request never reaches the renderer.
 export function sanitizeCard(input: unknown): CardData | null {
@@ -51,7 +51,7 @@ function topLine(c: CardData): string {
   const percent = Math.max(0.1, Math.round((c.rank * 1000) / c.totalUsers) / 10);
   return `Top ${percent.toFixed(1)}% of ${fmt(c.totalUsers)} wallets`;
 }
-const short = (wallet: string) => `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
+export const short = (wallet: string) => `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
 
 export function buildSvg(c: CardData): string {
   const rows = c.platforms
@@ -96,8 +96,8 @@ export function buildSvg(c: CardData): string {
 // The font ships with the dejavu-fonts-ttf package, so rendering does not depend on fonts installed on the server.
 const fontDir = path.join(path.dirname(createRequire(import.meta.url).resolve("dejavu-fonts-ttf/package.json")), "ttf");
 
-export function renderCardPng(c: CardData): Buffer {
-  const resvg = new Resvg(buildSvg(c), {
+export function renderSvgPng(svg: string): Buffer {
+  const resvg = new Resvg(svg, {
     font: {
       loadSystemFonts: false,
       fontFiles: [path.join(fontDir, "DejaVuSans.ttf"), path.join(fontDir, "DejaVuSans-Bold.ttf")],

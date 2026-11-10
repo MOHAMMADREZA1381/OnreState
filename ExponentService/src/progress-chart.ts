@@ -35,10 +35,14 @@ export function sanitizeProgress(input: unknown): ProgressData | null {
 const mint = "#79E7BD";
 const orange = "#E5A575";
 const muted = "#A1BAB5";
-const x = (index: number) => 218 + index * 143;
+const x = (index: number) => 265 + index * 135;
 const pointFormat = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 5 });
 const rankFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const percentFormat = new Intl.NumberFormat("en-US", {
+  style: "percent", maximumFractionDigits: 1, signDisplay: "exceptZero",
+});
+const dateLabel = (day: Day) => dateFormat.format(new Date(day.date));
 
 function panel(days: Day[], metric: "points" | "rank", top: number, color: string): string {
   const values = days.map(day => day[metric]);
@@ -48,17 +52,25 @@ function panel(days: Day[], metric: "points" | "rank", top: number, color: strin
   const isRank = metric === "rank";
   const title = isRank ? "Rank" : "Points";
   const format = (value: number) => isRank ? `#${rankFormat.format(value)}` : pointFormat.format(value);
-  const plotTop = top + 82;
-  const height = 114;
+  const plotTop = top + 90;
+  const height = 112;
+  // Give the extrema room above and below the marks, so the observed change does not fill the panel.
+  const padding = (max - min) / 2;
+  const lower = Math.max(isRank ? 1 : 0, min - padding);
+  const upper = max + padding;
   const y = (value: number) => {
     if (max === min) return plotTop + height / 2;
-    const fraction = (value - min) / (max - min);
+    const fraction = (value - lower) / (upper - lower);
     return plotTop + height * (isRank ? fraction : 1 - fraction);
   };
 
+  const gaps = days.map((day, i) => day.rank === null ? `
+    <rect x="${x(i) - 61}" y="${plotTop}" width="122" height="${height}" rx="8" fill="#1C423C"/>
+    <path d="M ${x(i) - 6} ${plotTop + height / 2} h 12" stroke="#6D948B" stroke-width="2"/>
+  ` : "").join("");
   const grid = (max === min ? [min] : [min, max]).map(value => `
     <text x="190" y="${y(value) + 6}" font-size="18" fill="${muted}" text-anchor="end">${format(value)}</text>
-    <path d="M 218 ${y(value)} H 1076" stroke="#31534E"/>`).join("");
+    <path d="M 257 ${y(value)} H 1083" stroke="#456862" stroke-dasharray="3 6"/>`).join("");
   const marks = values.map((value, i) => {
     if (value === null) return "";
     const previous = values[i - 1];
@@ -66,22 +78,28 @@ function panel(days: Day[], metric: "points" | "rank", top: number, color: strin
       `<path d="M ${x(i - 1)} ${y(previous)} L ${x(i)} ${y(value)}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`;
     return `${line}<circle cx="${x(i)}" cy="${y(value)}" r="5.5" fill="${color}"/>`;
   }).join("");
+  const recorded = days.filter(day => day.rank !== null);
+  const first = present[0];
   const latest = present.at(-1)!;
-  const change = isRank ? present[0] - latest : latest - present[0];
-  const changeText = present.length === 1 ? "1 recorded day" : isRank
-    ? change === 0 ? "No rank change" : `${rankFormat.format(Math.abs(change))} places ${change > 0 ? "up" : "down"}`
-    : `${change >= 0 ? "+" : "−"}${pointFormat.format(Math.abs(change))} since first point`;
+  const change = isRank ? first - latest : latest - first;
+  const direction = change > 0 ? "up" : "down";
+  const delta = isRank
+    ? `${rankFormat.format(Math.abs(change))} ${Math.abs(change) === 1 ? "place" : "places"} ${direction}`
+    : `${change > 0 ? "+" : "−"}${pointFormat.format(Math.abs(change))}${first > 0 ? ` (${percentFormat.format(change / first)})` : ""}`;
+  const changeText = recorded.length === 1 ? "One recorded day" :
+    `vs ${dateLabel(recorded[0])} · ${change === 0 ? "No change" : delta}`;
   const dates = days.map((day, i) => `
-    <text x="${x(i)}" y="${top + 237}" font-size="18" text-anchor="middle" fill="${day.rank === null ? "#76908A" : muted}">
-      ${dateFormat.format(new Date(day.date))}
+    <text x="${x(i)}" y="${top + 237}" font-size="18" text-anchor="middle" fill="${day.rank === null ? muted : "#E5F4EC"}">
+      ${dateLabel(day)}
     </text>`).join("");
 
   return `<rect x="48" y="${top}" width="1104" height="261" rx="21" fill="#133632" stroke="#284C46"/>
     <text x="76" y="${top + 49}" font-size="27" font-weight="700" fill="${color}">${title}</text>
-    <text x="1124" y="${top + 48}" font-size="20" text-anchor="end" fill="#E5F4EC">
-      ${format(latest)} latest · ${changeText}
+    <text x="1124" y="${top + 39}" font-size="22" font-weight="700" text-anchor="end" fill="#E5F4EC">
+      ${dateLabel(recorded.at(-1)!)} · ${format(latest)}
     </text>
-    ${grid}${marks}${dates}`;
+    <text x="1124" y="${top + 67}" font-size="18" text-anchor="end" fill="${muted}">${changeText}</text>
+    ${gaps}${grid}${marks}${dates}`;
 }
 
 export function buildProgressSvg(data: ProgressData): string {
@@ -91,9 +109,12 @@ export function buildProgressSvg(data: ProgressData): string {
     <text x="48" y="56" font-size="21" font-weight="700" fill="${mint}">ONRE / TIME MACHINE</text>
     <text x="1152" y="56" font-size="20" text-anchor="end" fill="${muted}">${short(data.wallet)}</text>
     <text x="48" y="111" font-size="47" font-weight="700" fill="#E5F4EC">My Progress Chart</text>
-    <text x="48" y="149" font-size="21" fill="${muted}">7 days · UTC · ${count}/7 recorded</text>
+    <text x="48" y="149" font-size="21" fill="${muted}">${count} of 7 UTC days recorded</text>
     ${panel(data.days, "points", 177, mint)}
     ${panel(data.days, "rank", 456, orange)}
-    <text x="48" y="749" font-size="19" fill="${muted}">Latest snapshot per UTC day · Gaps indicate missing data · Better ranks appear higher</text>
+    <rect x="48" y="733" width="25" height="19" rx="4" fill="#1C423C"/>
+    <path d="M 55 742.5 h 11" stroke="#6D948B" stroke-width="2"/>
+    <text x="84" y="749" font-size="19" fill="${muted}">No data</text>
+    <text x="1152" y="749" font-size="19" text-anchor="end" fill="${muted}">Lines connect consecutive days · Rank #1 is best</text>
   </svg>`;
 }
